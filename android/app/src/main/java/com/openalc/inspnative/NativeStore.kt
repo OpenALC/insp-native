@@ -31,6 +31,8 @@ data class NativeNote(
 class NativeStore(context: Context) : SQLiteOpenHelper(context, "insp-native.db", null, 1) {
     private val vault = context.getSharedPreferences("private-vault", Context.MODE_PRIVATE)
     private var privateSessionKey: SecretKey? = null
+    private val localKey by lazy { loadDeviceKey(false) }
+    private val wrapKey by lazy { loadDeviceKey(true) }
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE groups (id TEXT PRIMARY KEY, name BLOB NOT NULL, position INTEGER NOT NULL)")
@@ -46,11 +48,11 @@ class NativeStore(context: Context) : SQLiteOpenHelper(context, "insp-native.db"
         val wrapped = vault.getString("wrapped-key", null)
         privateSessionKey = if (wrapped == null) {
             val bytes = ByteArray(32).also(SecureRandom()::nextBytes)
-            val encoded = encrypt(bytes, deviceKey(true))
+            val encoded = encrypt(bytes, wrapKey)
             vault.edit().putString("wrapped-key", android.util.Base64.encodeToString(encoded, android.util.Base64.NO_WRAP)).apply()
             SecretKeySpec(bytes, "AES")
         } else {
-            SecretKeySpec(decrypt(android.util.Base64.decode(wrapped, android.util.Base64.NO_WRAP), deviceKey(true)), "AES")
+            SecretKeySpec(decrypt(android.util.Base64.decode(wrapped, android.util.Base64.NO_WRAP), wrapKey), "AES")
         }
     }
 
@@ -58,9 +60,9 @@ class NativeStore(context: Context) : SQLiteOpenHelper(context, "insp-native.db"
 
     private fun key(private: Boolean): SecretKey = if (private) {
         checkNotNull(privateSessionKey) { "隐私笔记尚未解锁" }
-    } else deviceKey(false)
+    } else localKey
 
-    private fun deviceKey(private: Boolean): SecretKey {
+    private fun loadDeviceKey(private: Boolean): SecretKey {
         val alias = if (private) "insp-native-private-wrap" else "insp-native-local"
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (store.getKey(alias, null) as? SecretKey)?.let { return it }

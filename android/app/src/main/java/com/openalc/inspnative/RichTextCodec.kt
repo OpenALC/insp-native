@@ -7,8 +7,11 @@ import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.AlignmentSpan
 import android.text.style.BulletSpan
+import android.text.style.BackgroundColorSpan
 import android.text.style.ImageSpan
+import android.text.style.LeadingMarginSpan
 import android.text.style.QuoteSpan
+import android.text.style.RelativeSizeSpan
 import android.text.style.StyleSpan
 import android.text.style.UnderlineSpan
 import android.text.style.StrikethroughSpan
@@ -31,7 +34,14 @@ object RichTextCodec {
                 is StrikethroughSpan -> "strike"
                 is QuoteSpan -> "quote"
                 is BulletSpan -> "bullet"
-                is AlignmentSpan -> if (span.alignment == Layout.Alignment.ALIGN_CENTER) "center" else "right"
+                is AlignmentSpan -> when (span.alignment) {
+                    Layout.Alignment.ALIGN_CENTER -> "center"
+                    Layout.Alignment.ALIGN_OPPOSITE -> "right"
+                    else -> "left"
+                }
+                is BackgroundColorSpan -> "highlight"
+                is RelativeSizeSpan -> "heading"
+                is LeadingMarginSpan.Standard -> "indent"
                 is URLSpan -> "link"
                 is ImageSpan -> "image"
                 else -> continue
@@ -42,12 +52,14 @@ object RichTextCodec {
             val entry = JSONObject().put("type", type).put("start", start).put("end", end)
             if (span is URLSpan) entry.put("url", span.url)
             if (span is ImageSpan) entry.put("attachmentId", span.source)
+            if (span is RelativeSizeSpan) entry.put("scale", span.sizeChange.toDouble())
+            if (span is LeadingMarginSpan.Standard) entry.put("marginPx", span.getLeadingMargin(true))
             spans.put(entry)
         }
         return JSONObject().put("version", 1).put("text", text.toString()).put("spans", spans).toString()
     }
 
-    fun decode(body: String, image: (String) -> Drawable? = { null }): SpannableStringBuilder {
+    fun decode(body: String, dark: Boolean = false, image: (String) -> Drawable? = { null }): SpannableStringBuilder {
         val source = JSONObject(body)
         val result = SpannableStringBuilder(source.optString("text"))
         val spans = source.optJSONArray("spans") ?: JSONArray()
@@ -65,6 +77,10 @@ object RichTextCodec {
                 "bullet" -> BulletSpan(18, 0xff54d81b.toInt())
                 "center" -> AlignmentSpan.Standard(Layout.Alignment.ALIGN_CENTER)
                 "right" -> AlignmentSpan.Standard(Layout.Alignment.ALIGN_OPPOSITE)
+                "left" -> AlignmentSpan.Standard(Layout.Alignment.ALIGN_NORMAL)
+                "highlight" -> BackgroundColorSpan(if (dark) 0xff51451c.toInt() else 0xffffeea3.toInt())
+                "heading" -> RelativeSizeSpan(entry.getDouble("scale").toFloat())
+                "indent" -> LeadingMarginSpan.Standard(entry.getInt("marginPx"))
                 "link" -> URLSpan(entry.getString("url"))
                 "image" -> image(entry.getString("attachmentId"))?.let { ImageSpan(it, entry.getString("attachmentId")) }
                 else -> null

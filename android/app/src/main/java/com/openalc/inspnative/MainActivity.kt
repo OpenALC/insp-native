@@ -1,11 +1,13 @@
 package com.openalc.inspnative
 
 import android.app.Activity
+import android.animation.ValueAnimator
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
+import android.provider.OpenableColumns
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Typeface
@@ -18,21 +20,30 @@ import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
 import android.net.Uri
+import android.util.LruCache
 import android.text.Editable
 import android.text.Spannable
+import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.TextWatcher
 import android.text.style.AlignmentSpan
 import android.text.style.BulletSpan
+import android.text.style.BackgroundColorSpan
 import android.text.style.ImageSpan
+import android.text.style.LeadingMarginSpan
 import android.text.style.QuoteSpan
+import android.text.style.RelativeSizeSpan
 import android.text.style.StyleSpan
+import android.text.style.StrikethroughSpan
 import android.text.style.UnderlineSpan
+import android.text.style.URLSpan
 import android.text.Layout
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
+import android.view.animation.OvershootInterpolator
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
@@ -41,8 +52,11 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import android.view.inputmethod.InputMethodManager
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
 import androidx.recyclerview.widget.RecyclerView
+import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.StaggeredGridLayoutManager
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -50,6 +64,7 @@ import com.google.android.material.transition.MaterialContainerTransform
 import androidx.transition.TransitionManager
 import org.json.JSONObject
 import java.util.concurrent.Executors
+import java.io.File
 
 class MainActivity : AppCompatActivity() {
     private val io = Executors.newSingleThreadExecutor()
@@ -61,6 +76,21 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cards: RecyclerView
     private lateinit var filters: LinearLayout
     private lateinit var cardAdapter: Cards
+    private var tabletSidebar: LinearLayout? = null
+    private var tabletPlaceholder: TextView? = null
+    private lateinit var headerTitle: TextView
+    private lateinit var headerAction: TextView
+    private lateinit var composeBar: LinearLayout
+    private lateinit var composeNoteButton: TextView
+    private lateinit var composeMindButton: TextView
+    private var composeCompact = false
+    private var composeAnimator: ValueAnimator? = null
+    private lateinit var selectionBar: LinearLayout
+    private val selectedIds = mutableSetOf<String>()
+    private val thumbnails = object : LruCache<String, BitmapDrawable>(8 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: BitmapDrawable) = value.bitmap.byteCount
+    }
+    private var selectionMode = false
     private var drawerOverlay: FrameLayout? = null
     private var settingsOverlay: LinearLayout? = null
     private var selectedCard: View? = null
@@ -68,8 +98,14 @@ class MainActivity : AppCompatActivity() {
     private var bodyInput: EditText? = null
     private var mindPanel: MindMapPanel? = null
     private var saveTask: Runnable? = null
+    private val undoHistory = ArrayDeque<SpannableStringBuilder>()
+    private val redoHistory = ArrayDeque<SpannableStringBuilder>()
+    private var historyTask: Runnable? = null
+    private var editBurst = false
+    private var restoringHistory = false
     private var pendingImageNoteId: String? = null
     private var pendingImagePrivate = false
+    private var pendingExport: ExportedNote? = null
     private var groupId: String? = null
     private var privateArea = false
     private var privateGeneration = 0
@@ -77,6 +113,8 @@ class MainActivity : AppCompatActivity() {
     private var allNotes = listOf<NativeNote>()
     private var allGroups = listOf<NoteGroup>()
     private val green = 0xff54d81b.toInt()
+    private val tablet by lazy { resources.configuration.smallestScreenWidthDp >= 600 }
+    private val wideTablet by lazy { tablet && resources.configuration.screenWidthDp >= 900 }
     private val dark by lazy { resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES }
     private val ink by lazy { if (dark) 0xffd4d4d4.toInt() else Color.BLACK }
     private val paper by lazy { if (dark) 0xff20221f.toInt() else Color.WHITE }
@@ -93,12 +131,30 @@ class MainActivity : AppCompatActivity() {
         root = FrameLayout(this).apply { id = View.generateViewId(); setBackgroundColor(this@MainActivity.background) }
         home = buildHome()
         editor = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(paper); visibility = View.GONE }
-        root.addView(home, FrameLayout.LayoutParams(-1, -1))
-        root.addView(editor, FrameLayout.LayoutParams(-1, -1))
+        if (tablet) {
+            val sidebarWidth = if (wideTablet) dp(220) else 0
+            val listWidth = if (wideTablet) dp(360) else dp(300)
+            if (wideTablet) {
+                tabletSidebar = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(if (dark) 0xff171717.toInt() else 0xfff5f5f5.toInt()) }
+                root.addView(tabletSidebar, FrameLayout.LayoutParams(sidebarWidth, -1, Gravity.START))
+            }
+            root.addView(home, FrameLayout.LayoutParams(listWidth, -1, Gravity.START).apply { leftMargin = sidebarWidth })
+            val editorParams = FrameLayout.LayoutParams(-1, -1).apply { leftMargin = sidebarWidth + listWidth }
+            tabletPlaceholder = TextView(this).apply {
+                text = "选择一篇笔记，开始记录"; textSize = 19f; setTextColor(secondary); gravity = Gravity.CENTER
+                setBackgroundColor(paper)
+            }
+            root.addView(tabletPlaceholder, FrameLayout.LayoutParams(-1, -1).apply { leftMargin = sidebarWidth + listWidth })
+            root.addView(editor, editorParams)
+        } else {
+            root.addView(home, FrameLayout.LayoutParams(-1, -1))
+            root.addView(editor, FrameLayout.LayoutParams(-1, -1))
+        }
         root.setOnApplyWindowInsetsListener { _, insets ->
             val bars = insets.getInsets(WindowInsets.Type.systemBars())
             home.setPadding(0, bars.top, 0, bars.bottom)
             editor.setPadding(0, bars.top, 0, bars.bottom)
+            tabletSidebar?.setPadding(0, bars.top, 0, bars.bottom)
             insets
         }
         setContentView(root)
@@ -112,18 +168,20 @@ class MainActivity : AppCompatActivity() {
     private fun buildHome(): LinearLayout {
         val page = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(this@MainActivity.background) }
         val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(18), dp(12), dp(18), dp(8)) }
-        header.addView(action("☰") { openDrawer() }, LinearLayout.LayoutParams(dp(48), dp(48)))
-        header.addView(TextView(this).apply {
+        if (!wideTablet) header.addView(action("☰") { openDrawer() }, LinearLayout.LayoutParams(dp(48), dp(48)))
+        headerTitle = TextView(this).apply {
             text = "笔记"; textSize = 29f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink)
             setPadding(dp(10), 0, 0, 0)
-        }, LinearLayout.LayoutParams(0, -2, 1f))
-        header.addView(action("⋯") { listOptions() }, LinearLayout.LayoutParams(dp(48), dp(48)))
+        }
+        header.addView(headerTitle, LinearLayout.LayoutParams(0, -2, 1f))
+        headerAction = action("⋯") { if (selectionMode) clearSelection() else listOptions() }
+        header.addView(headerAction, LinearLayout.LayoutParams(dp(48), dp(48)))
         page.addView(header)
         val searchInput = EditText(this).apply {
             hint = "搜索笔记"; textSize = 15f; setSingleLine(true); setTextColor(ink); setHintTextColor(secondary)
             background = rounded(if (dark) 0xff30342e.toInt() else 0xffebeeea.toInt(), 17)
             setPadding(dp(18), 0, dp(18), 0)
-            addTextChangedListener(watcher { search = it; renderCards() })
+            addTextChangedListener(watcher { search = it; if (selectionMode) clearSelection(); renderCards() })
         }
         page.addView(searchInput, LinearLayout.LayoutParams(-1, dp(52)).apply { setMargins(dp(22), dp(8), dp(22), dp(14)) })
         val filterScroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
@@ -131,18 +189,132 @@ class MainActivity : AppCompatActivity() {
         filterScroll.addView(filters)
         page.addView(filterScroll, LinearLayout.LayoutParams(-1, dp(52)))
         cards = RecyclerView(this).apply {
-            layoutManager = StaggeredGridLayoutManager(2, StaggeredGridLayoutManager.VERTICAL)
+            layoutManager = StaggeredGridLayoutManager(if (tablet) 1 else 2, StaggeredGridLayoutManager.VERTICAL)
             clipToPadding = false
             setPadding(dp(14), dp(16), dp(14), dp(18))
+            addOnItemTouchListener(object : RecyclerView.SimpleOnItemTouchListener() {
+                private var downX = 0f
+                private var downY = 0f
+                override fun onInterceptTouchEvent(view: RecyclerView, event: MotionEvent): Boolean {
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> { downX = event.x; downY = event.y }
+                        MotionEvent.ACTION_UP -> {
+                            val dx = event.x - downX
+                            if (kotlin.math.abs(dx) > dp(64) && kotlin.math.abs(dx) > kotlin.math.abs(event.y - downY) * 1.5f) {
+                                switchGroup(if (dx < 0) 1 else -1)
+                                return true
+                            }
+                        }
+                    }
+                    return false
+                }
+            })
+            addOnScrollListener(object : RecyclerView.OnScrollListener() {
+                override fun onScrolled(view: RecyclerView, dx: Int, dy: Int) {
+                    if (dy != 0) setComposeCompact(true)
+                }
+                override fun onScrollStateChanged(view: RecyclerView, state: Int) {
+                    if (state == RecyclerView.SCROLL_STATE_IDLE) setComposeCompact(false)
+                }
+            })
         }
         cardAdapter = Cards()
         cards.adapter = cardAdapter
         page.addView(cards, LinearLayout.LayoutParams(-1, 0, 1f))
-        val compose = LinearLayout(this).apply { gravity = Gravity.CENTER; setPadding(dp(10), dp(8), dp(10), dp(10)) }
-        compose.addView(pill("＋  笔记") { create("richtext") }, LinearLayout.LayoutParams(0, dp(54), 1f))
-        compose.addView(pill("⌘  灵感笔记") { create("mindmap") }, LinearLayout.LayoutParams(0, dp(54), 1f).apply { leftMargin = dp(8) })
-        page.addView(compose)
+        composeBar = LinearLayout(this).apply { gravity = Gravity.END; setPadding(dp(10), dp(8), dp(10), dp(10)) }
+        val expanded = minOf(dp(if (tablet) 130 else 180), (resources.displayMetrics.widthPixels - dp(28)) / 2)
+        composeNoteButton = pill("＋  笔记") { create("richtext") }
+        composeMindButton = pill("⌘  灵感笔记") { create("mindmap") }
+        composeBar.addView(composeNoteButton, LinearLayout.LayoutParams(expanded, dp(54)))
+        composeBar.addView(composeMindButton, LinearLayout.LayoutParams(expanded, dp(54)).apply { leftMargin = dp(8) })
+        page.addView(composeBar)
+        selectionBar = LinearLayout(this).apply { gravity = Gravity.CENTER; setPadding(dp(10), dp(8), dp(10), dp(10)); visibility = View.GONE }
+        selectionBar.addView(pill("移动到") { moveSelected() }, LinearLayout.LayoutParams(0, dp(54), 1f))
+        selectionBar.addView(pill("删除") { deleteSelected() }, LinearLayout.LayoutParams(0, dp(54), 1f).apply { leftMargin = dp(8) })
+        page.addView(selectionBar)
         return page
+    }
+
+    private fun toggleSelection(id: String) {
+        val entering = !selectionMode
+        if (!selectionMode) selectionMode = true
+        if (!selectedIds.add(id)) selectedIds.remove(id)
+        if (selectedIds.isEmpty()) clearSelection() else {
+            updateSelection()
+            if (entering) cardAdapter.selectionChangedAll() else cardAdapter.selectionChanged(id)
+        }
+    }
+
+    private fun updateSelection() {
+        headerTitle.text = "已选 ${selectedIds.size} 项"
+        headerAction.text = "取消"
+        headerAction.textSize = 15f
+        composeBar.visibility = View.GONE
+        selectionBar.visibility = View.VISIBLE
+    }
+
+    private fun clearSelection() {
+        selectedIds.clear(); selectionMode = false
+        headerTitle.text = "笔记"; headerAction.text = "⋯"; headerAction.textSize = 22f
+        composeBar.visibility = View.VISIBLE; selectionBar.visibility = View.GONE
+        setComposeCompact(false)
+        cardAdapter.selectionChangedAll()
+    }
+
+    private fun setComposeCompact(compact: Boolean) {
+        if (composeCompact == compact) return
+        composeCompact = compact
+        composeAnimator?.cancel()
+        val start = composeNoteButton.layoutParams.width
+        val end = if (compact) dp(54) else minOf(dp(if (tablet) 130 else 180), (resources.displayMetrics.widthPixels - dp(28)) / 2)
+        if (compact) { composeNoteButton.text = "＋"; composeMindButton.text = "⌘" }
+        composeAnimator = ValueAnimator.ofInt(start, end).apply {
+            duration = if (compact) 170 else 280
+            if (!compact) interpolator = OvershootInterpolator(1.15f)
+            addUpdateListener { animator ->
+                val width = animator.animatedValue as Int
+                composeNoteButton.layoutParams = composeNoteButton.layoutParams.apply { this.width = width }
+                composeMindButton.layoutParams = composeMindButton.layoutParams.apply { this.width = width }
+            }
+            if (!compact) addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    if (!composeCompact) {
+                        composeNoteButton.text = "＋  笔记"; composeMindButton.text = "⌘  灵感笔记"
+                    }
+                }
+            })
+            start()
+        }
+    }
+
+    private fun switchGroup(step: Int) {
+        if (privateArea || selectionMode) return
+        val ids = listOf<String?>(null) + allGroups.map { it.id }
+        val next = (ids.indexOf(groupId) + step).coerceIn(0, ids.lastIndex)
+        if (ids[next] == groupId) return
+        groupId = ids[next]
+        cards.alpha = 0.45f
+        cards.translationX = (if (step > 0) dp(22) else -dp(22)).toFloat()
+        renderFilters(); renderCards(); cards.scrollToPosition(0)
+        cards.animate().alpha(1f).translationX(0f).setDuration(220).start()
+    }
+
+    private fun moveSelected() {
+        val names = listOf("未分组") + allGroups.map { it.name }
+        MaterialAlertDialogBuilder(this).setTitle("移动到").setItems(names.toTypedArray()) { _, index ->
+            val destination = if (index == 0) null else allGroups[index - 1].id
+            val notes = allNotes.filter { it.id in selectedIds }.map { it.copy(groupId = destination) }
+            io.execute { notes.forEach(store::save); runOnUiThread { clearSelection(); refresh() } }
+        }.show()
+    }
+
+    private fun deleteSelected() {
+        MaterialAlertDialogBuilder(this).setTitle("删除 ${selectedIds.size} 篇笔记？")
+            .setNegativeButton("取消", null)
+            .setPositiveButton("删除") { _, _ ->
+                val ids = selectedIds.toList()
+                io.execute { ids.forEach(store::delete); runOnUiThread { clearSelection(); refresh() } }
+            }.show()
     }
 
     private fun refresh() {
@@ -153,7 +325,7 @@ class MainActivity : AppCompatActivity() {
             val notes = store.notes(area)
             runOnUiThread {
                 if (generation == privateGeneration && area == privateArea) {
-                    allGroups = groups; allNotes = notes; renderFilters(); renderCards()
+                    allGroups = groups; allNotes = notes; renderFilters(); renderCards(); renderTabletSidebar()
                 }
             }
         }
@@ -168,7 +340,7 @@ class MainActivity : AppCompatActivity() {
                 text = label; textSize = 15f; setTextColor(ink); gravity = Gravity.CENTER
                 setPadding(dp(18), 0, dp(18), 0)
                 background = rounded(if (groupId == id) paper else Color.TRANSPARENT, 24)
-                setOnClickListener { groupId = id; renderFilters(); renderCards() }
+                setOnClickListener { if (selectionMode) clearSelection(); groupId = id; renderFilters(); renderCards() }
             }, LinearLayout.LayoutParams(-2, dp(44)).apply { rightMargin = dp(7) })
         }
     }
@@ -197,13 +369,14 @@ class MainActivity : AppCompatActivity() {
         selectedCard = card
         if (note.kind == "richtext") {
             io.execute {
-                val document = RichTextCodec.decode(note.body) { id -> imageDrawable(note, id) }
+                val document = RichTextCodec.decode(note.body, dark) { id -> imageDrawable(note, id) }
                 runOnUiThread { if (generation == privateGeneration) showEditor(note, document, card) }
             }
         } else showEditor(note, null, card)
     }
 
     private fun showEditor(note: NativeNote, document: Spannable?, card: View?) {
+        undoHistory.clear(); redoHistory.clear(); editBurst = false
         editor.removeAllViews()
         val top = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(10), dp(8), dp(10), dp(8)) }
         top.addView(action("‹") { closeEditor() }, LinearLayout.LayoutParams(dp(48), dp(48)))
@@ -217,6 +390,12 @@ class MainActivity : AppCompatActivity() {
             })
         }
         top.addView(title, LinearLayout.LayoutParams(0, dp(50), 1f))
+        top.addView(action("完成") {
+            (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                .hideSoftInputFromWindow(editor.windowToken, 0)
+            editor.requestFocus()
+            persistNow()
+        }.apply { textSize = 15f }, LinearLayout.LayoutParams(dp(50), dp(48)))
         if (note.kind == "mindmap") {
             lateinit var toggle: TextView
             toggle = action("◇") { toggle.text = if (mindPanel?.toggleMode() == true) "☷" else "◇" }
@@ -229,9 +408,30 @@ class MainActivity : AppCompatActivity() {
                 gravity = Gravity.TOP; textSize = 18f; setTextColor(ink); setHintTextColor(secondary)
                 background = null; hint = "从这里开始记录…"
                 setPadding(dp(24), dp(22), dp(24), dp(24))
-                setText(document ?: RichTextCodec.decode(note.body))
+                setText(document ?: RichTextCodec.decode(note.body, dark))
                 clearFocus()
-                addTextChangedListener(watcher { scheduleSave() })
+                addTextChangedListener(object : TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {
+                        if (!restoringHistory) captureUndo(this@apply)
+                    }
+                    override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                        if (!restoringHistory) { scheduleSave(); settleHistory() }
+                    }
+                    override fun afterTextChanged(s: Editable?) = Unit
+                })
+                setOnTouchListener { view, event ->
+                    if (event.actionMasked == MotionEvent.ACTION_UP) {
+                        val field = view as EditText
+                        val offset = field.getOffsetForPosition(event.x, event.y)
+                        val start = if (offset == 0) 0 else field.text.lastIndexOf('\n', offset - 1) + 1
+                        if (offset <= start + 1 && start < field.length() && field.text[start] in "☐☑") {
+                            field.text.replace(start, start + 1, if (field.text[start] == '☐') "☑" else "☐")
+                            scheduleSave()
+                            return@setOnTouchListener true
+                        }
+                    }
+                    false
+                }
             }
             bodyInput = input
             mindPanel = null
@@ -243,7 +443,7 @@ class MainActivity : AppCompatActivity() {
         }
         editor.isFocusableInTouchMode = true
         editor.requestFocus()
-        if (card != null) {
+        if (card != null && !tablet) {
             val transition = MaterialContainerTransform().apply {
                 startView = card; endView = editor; addTarget(editor)
                 drawingViewId = android.R.id.content; duration = 320
@@ -253,12 +453,14 @@ class MainActivity : AppCompatActivity() {
             card.visibility = View.INVISIBLE
         }
         editor.visibility = View.VISIBLE
+        tabletPlaceholder?.visibility = View.GONE
+        if (tablet) { editor.alpha = 0f; editor.translationX = dp(18).toFloat(); editor.animate().alpha(1f).translationX(0f).setDuration(220).start() }
     }
 
     private fun closeEditor() {
         persistNow()
         val card = selectedCard
-        if (card != null && card.parent != null) {
+        if (card != null && card.parent != null && !tablet) {
             val transition = MaterialContainerTransform().apply {
                 startView = editor; endView = card; addTarget(card)
                 drawingViewId = android.R.id.content; duration = 270
@@ -268,8 +470,10 @@ class MainActivity : AppCompatActivity() {
             card.visibility = View.VISIBLE
         }
         editor.visibility = View.GONE
+        tabletPlaceholder?.visibility = View.VISIBLE
         active = null; bodyInput = null; mindPanel = null; selectedCard = null
-        if (card != null && card.parent != null) handler.postDelayed({ refresh() }, 280) else refresh()
+        undoHistory.clear(); redoHistory.clear(); historyTask?.let(handler::removeCallbacks); editBurst = false
+        if (!tablet && card != null && card.parent != null) handler.postDelayed({ refresh() }, 280) else refresh()
     }
 
     private fun scheduleSave() {
@@ -289,14 +493,21 @@ class MainActivity : AppCompatActivity() {
     private fun formatBar(): View {
         val scroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; setBackgroundColor(paper) }
         val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(12), 0, dp(12), 0) }
-        val commands = listOf("B" to "bold", "I" to "italic", "U" to "underline", "❝" to "quote", "•" to "bullet",
-            "≡" to "left", "☰" to "center", "≡›" to "right", "＋图" to "image")
+        val commands = listOf(
+            "↶" to "undo", "↷" to "redo",
+            "B" to "bold", "I" to "italic", "U" to "underline", "S̶" to "strike", "▧" to "highlight",
+            "H" to "heading", "❝" to "quote", "•" to "bullet", "☐" to "task", "―" to "divider",
+            "≡" to "left", "☰" to "center", "≡›" to "right", "→" to "indentPlus", "←" to "indentMinus",
+            "🔗" to "link", "＋图" to "image",
+        )
         for ((label, command) in commands) row.addView(action(label) { format(command) }, LinearLayout.LayoutParams(dp(50), dp(48)))
         scroll.addView(row)
         return scroll
     }
 
     private fun format(command: String) {
+        if (command == "undo") { restoreHistory(undoHistory, redoHistory); return }
+        if (command == "redo") { restoreHistory(redoHistory, undoHistory); return }
         if (command == "image") {
             pendingImageNoteId = active?.id
             pendingImagePrivate = active?.private == true
@@ -305,22 +516,114 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val input = bodyInput ?: return
-        val start = input.selectionStart
-        val end = input.selectionEnd
-        if (start == end) { toast("先选中要设置格式的文字"); return }
+        val selectionStart = input.selectionStart.coerceAtLeast(0)
+        val selectionEnd = input.selectionEnd.coerceAtLeast(selectionStart)
+        if (command == "task") {
+            val start = if (selectionStart == 0) 0 else input.text.lastIndexOf('\n', selectionStart - 1) + 1
+            captureUndo(input)
+            when (input.text.getOrNull(start)) {
+                '☐' -> input.text.replace(start, start + 1, "☑")
+                '☑' -> input.text.replace(start, start + 1, "☐")
+                else -> input.text.insert(start, "☐ ")
+            }
+            scheduleSave(); settleHistory()
+            return
+        }
+        if (command == "divider") {
+            captureUndo(input)
+            input.text.insert(selectionStart, "\n────────────\n")
+            scheduleSave()
+            return
+        }
+        if (command == "link") { linkDialog(input, selectionStart, selectionEnd); return }
+        val paragraph = command in setOf("quote", "bullet", "heading", "left", "center", "right", "indentPlus", "indentMinus")
+        val start = if (paragraph) (if (selectionStart == 0) -1 else input.text.lastIndexOf('\n', selectionStart - 1)).let { it + 1 } else selectionStart
+        val end = if (paragraph) input.text.indexOf('\n', selectionEnd).let { if (it < 0) input.length() else it } else selectionEnd
+        if (start == end) { toast("先输入或选中要设置格式的文字"); return }
+        if (command == "indentPlus" || command == "indentMinus") {
+            captureUndo(input)
+            val current = input.text.getSpans(start, end, LeadingMarginSpan.Standard::class.java)
+            val margin = current.maxOfOrNull { it.getLeadingMargin(true) } ?: 0
+            current.forEach(input.text::removeSpan)
+            val next = (margin + if (command == "indentPlus") dp(24) else -dp(24)).coerceIn(0, dp(96))
+            if (next > 0) input.text.setSpan(LeadingMarginSpan.Standard(next), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            scheduleSave(); settleHistory()
+            return
+        }
         val span = when (command) {
             "bold" -> StyleSpan(Typeface.BOLD)
             "italic" -> StyleSpan(Typeface.ITALIC)
             "underline" -> UnderlineSpan()
+            "strike" -> StrikethroughSpan()
+            "highlight" -> BackgroundColorSpan(if (dark) 0xff51451c.toInt() else 0xffffeea3.toInt())
+            "heading" -> RelativeSizeSpan(1.35f)
             "quote" -> QuoteSpan(green)
             "bullet" -> BulletSpan(dp(12), green)
             "center" -> AlignmentSpan.Standard(Layout.Alignment.ALIGN_CENTER)
             "right" -> AlignmentSpan.Standard(Layout.Alignment.ALIGN_OPPOSITE)
             else -> AlignmentSpan.Standard(Layout.Alignment.ALIGN_NORMAL)
         }
+        captureUndo(input)
         input.text.setSpan(span, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         if (command == "quote") input.text.setSpan(StyleSpan(Typeface.ITALIC), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        if (command == "heading") input.text.setSpan(StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        scheduleSave(); settleHistory()
+    }
+
+    private fun captureUndo(input: EditText) {
+        if (editBurst) return
+        undoHistory.addLast(SpannableStringBuilder(input.text))
+        if (undoHistory.size > 40) undoHistory.removeFirst()
+        redoHistory.clear()
+        editBurst = true
+    }
+
+    private fun settleHistory() {
+        historyTask?.let(handler::removeCallbacks)
+        historyTask = Runnable { editBurst = false }.also { handler.postDelayed(it, 450) }
+    }
+
+    private fun restoreHistory(from: ArrayDeque<SpannableStringBuilder>, to: ArrayDeque<SpannableStringBuilder>) {
+        val input = bodyInput ?: return
+        if (from.isEmpty()) return
+        historyTask?.let(handler::removeCallbacks); editBurst = false
+        to.addLast(SpannableStringBuilder(input.text))
+        val previous = from.removeLast()
+        val cursor = input.selectionStart.coerceIn(0, previous.length)
+        restoringHistory = true
+        input.setText(previous)
+        input.setSelection(cursor)
+        restoringHistory = false
         scheduleSave()
+    }
+
+    private fun linkDialog(input: EditText, start: Int, end: Int) {
+        val fields = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(4), dp(20), 0)
+        }
+        val label = EditText(this).apply {
+            hint = "显示文字"; setSingleLine(true); setText(input.text.substring(start, end))
+            setTextColor(ink); setHintTextColor(secondary)
+            background = rounded(if (dark) 0xff30342e.toInt() else 0xfff0f0f0.toInt(), 12)
+            setPadding(dp(14), 0, dp(14), 0)
+        }
+        val address = EditText(this).apply {
+            hint = "https://example.com"; setSingleLine(true); setTextColor(ink); setHintTextColor(secondary)
+            background = rounded(if (dark) 0xff30342e.toInt() else 0xfff0f0f0.toInt(), 12)
+            setPadding(dp(14), 0, dp(14), 0)
+        }
+        fields.addView(label, LinearLayout.LayoutParams(-1, dp(50)).apply { bottomMargin = dp(12) })
+        fields.addView(address, LinearLayout.LayoutParams(-1, dp(50)))
+        MaterialAlertDialogBuilder(this).setTitle("插入链接").setView(fields)
+            .setNegativeButton("取消", null).setPositiveButton("完成") { _, _ ->
+                val text = label.text.toString().ifBlank { address.text.toString() }
+                val url = address.text.toString().trim()
+                if (url.isNotBlank() && text.isNotBlank()) {
+                    input.text.replace(start, end, text)
+                    input.text.setSpan(URLSpan(url), start, start + text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    scheduleSave()
+                }
+            }.show()
     }
 
     @Deprecated("Uses the platform document picker result")
@@ -330,7 +633,13 @@ class MainActivity : AppCompatActivity() {
             val uri = data?.data ?: return
             io.execute {
                 try {
-                    val bundle = contentResolver.openInputStream(uri)!!.use(TransferImport::read)
+                    val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)!!.use {
+                        it.moveToFirst(); it.getString(0)
+                    }
+                    val bundle = contentResolver.openInputStream(uri)!!.use { input ->
+                        if (name.endsWith(".zip", true)) TransferImport.read(input)
+                        else ExternalImport.read(name, input.readBytes())
+                    }
                     runOnUiThread {
                         if (bundle.notes.any { it.note.private }) authenticate { importBundle(bundle) }
                         else importBundle(bundle)
@@ -338,6 +647,15 @@ class MainActivity : AppCompatActivity() {
                 } catch (error: Exception) {
                     runOnUiThread { toast("迁移文件无法读取：${error.message}") }
                 }
+            }
+            return
+        }
+        if (requestCode == 702) {
+            val file = pendingExport
+            pendingExport = null
+            if (resultCode == Activity.RESULT_OK && file != null && data?.data != null) io.execute {
+                contentResolver.openOutputStream(data.data!!, "wt")!!.use { it.write(file.bytes) }
+                runOnUiThread { toast("已导出 ${file.filename}") }
             }
             return
         }
@@ -367,7 +685,7 @@ class MainActivity : AppCompatActivity() {
                         scheduleSave()
                     } else {
                         io.execute {
-                            val document = RichTextCodec.decode(note.body) { imageDrawable(note, it) }
+                            val document = RichTextCodec.decode(note.body, dark) { imageDrawable(note, it) }
                             val start = document.length
                             document.append("\n\uFFFC\n")
                             document.setSpan(ImageSpan(drawable, id), start + 1, start + 2, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
@@ -401,9 +719,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun noteOptions(note: NativeNote) {
-        val items = arrayOf("分享纯文本", "复制纯文本", "移动到分组", if (note.private) "移出隐私笔记" else "移入隐私笔记", "删除笔记")
+        val items = arrayOf("分享与导出", "复制纯文本", "移动到分组", if (note.private) "移出隐私笔记" else "移入隐私笔记", "删除笔记")
         MaterialAlertDialogBuilder(this).setItems(items) { _, index -> when (index) {
-            0 -> share(note)
+            0 -> shareOptions(note)
             1 -> {
                 (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText(note.title, contentText(note)))
                 toast("已复制")
@@ -421,15 +739,57 @@ class MainActivity : AppCompatActivity() {
         } }.show()
     }
 
-    private fun contentText(note: NativeNote): String = if (note.kind == "richtext") RichTextCodec.plain(note.body) else {
-        val lines = mutableListOf<String>()
-        fun visit(node: JSONObject, depth: Int) {
-            lines += "  ".repeat(depth) + node.getString("text")
-            val children = node.getJSONArray("children")
-            for (index in 0 until children.length()) visit(children.getJSONObject(index), depth + 1)
+    private fun contentText(note: NativeNote) = NativeExport.plain(note)
+
+    private fun shareOptions(note: NativeNote) {
+        val options = arrayOf("以纯文本分享", "以图片分享", "导出 Markdown", "导出 Word", "导出 PDF")
+        MaterialAlertDialogBuilder(this).setTitle("分享与导出").setItems(options) { _, index ->
+            when (index) {
+                0 -> { persistNow(); share(note) }
+                1 -> exportNote(note, "png")
+                2 -> exportNote(note, "md")
+                3 -> exportNote(note, "docx")
+                4 -> exportNote(note, "pdf")
+            }
+        }.show()
+    }
+
+    private fun exportNote(note: NativeNote, format: String) {
+        persistNow()
+        val copy = note.copy()
+        io.execute {
+            try {
+                val image: (String) -> ByteArray = { store.image(copy, it) }
+                val file = when (format) {
+                    "png" -> NativeExport.png(copy, image)
+                    "md" -> NativeExport.markdown(copy, image)
+                    "docx" -> NativeExport.docx(copy, image)
+                    else -> NativeExport.pdf(copy, image)
+                }
+                runOnUiThread { if (format == "png") shareImage(file) else saveExport(file) }
+            } catch (error: Exception) {
+                runOnUiThread { toast("导出失败：${error.message}") }
+            }
         }
-        visit(JSONObject(note.body).getJSONObject("root"), 0)
-        lines.joinToString("\n")
+    }
+
+    private fun saveExport(file: ExportedNote) {
+        pendingExport = file
+        startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE); type = file.mimeType
+            putExtra(Intent.EXTRA_TITLE, file.filename)
+        }, 702)
+    }
+
+    private fun shareImage(file: ExportedNote) {
+        val directory = File(cacheDir, "shared").apply { mkdirs() }
+        val saved = File(directory, file.filename).apply { writeBytes(file.bytes) }
+        val uri = FileProvider.getUriForFile(this, "$packageName.files", saved)
+        startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+            type = file.mimeType
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }, "分享笔记图片"))
     }
 
     private fun share(note: NativeNote) {
@@ -447,7 +807,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun listOptions() {
-        MaterialAlertDialogBuilder(this).setItems(arrayOf("新建分组", "进入隐私笔记", "从拾页导入", "关于拾页 Native")) { _, index -> when (index) {
+        MaterialAlertDialogBuilder(this).setItems(arrayOf("新建分组", "进入隐私笔记", "导入笔记", "关于拾页 Native")) { _, index -> when (index) {
             0 -> groupDialog()
             1 -> enterPrivate()
             2 -> pickTransfer()
@@ -457,7 +817,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun pickTransfer() {
         startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            type = "application/zip"; addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"; addCategory(Intent.CATEGORY_OPENABLE)
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/zip", "text/plain", "text/markdown", "application/octet-stream"))
         }, 701)
     }
 
@@ -509,13 +870,15 @@ class MainActivity : AppCompatActivity() {
         val links = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         scroll.addView(links)
         panel.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-        fun row(label: String, click: () -> Unit) {
-            links.addView(TextView(this).apply {
+        fun row(label: String, click: () -> Unit): TextView {
+            val view = TextView(this).apply {
                 text = label; textSize = 16f; setTextColor(ink); gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(16), 0, dp(12), 0)
                 background = rounded(Color.TRANSPARENT, 14)
                 setOnClickListener { closeDrawer(); click() }
-            }, LinearLayout.LayoutParams(-1, dp(52)))
+            }
+            links.addView(view, LinearLayout.LayoutParams(-1, dp(52)))
+            return view
         }
         row("全部笔记") { leavePrivate() }
         row("隐私笔记") { enterPrivate() }
@@ -523,7 +886,9 @@ class MainActivity : AppCompatActivity() {
             text = "分组"; textSize = 13f; setTextColor(secondary)
             setPadding(dp(16), dp(22), 0, dp(9))
         })
-        for (group in allGroups) row(group.name) { leavePrivate(); groupId = group.id; renderFilters(); renderCards() }
+        for (group in allGroups) row(group.name) {
+            leavePrivate(); groupId = group.id; renderFilters(); renderCards()
+        }.setOnLongClickListener { closeDrawer(); groupOptions(group); true }
         row("＋  新建分组") { groupDialog() }
         panel.addView(TextView(this).apply {
             text = "⚙  设置"; textSize = 16f; setTextColor(ink); gravity = Gravity.CENTER_VERTICAL
@@ -535,12 +900,63 @@ class MainActivity : AppCompatActivity() {
         panel.animate().translationX(0f).setDuration(260).start()
     }
 
+    private fun renderTabletSidebar() {
+        val sidebar = tabletSidebar ?: return
+        sidebar.removeAllViews()
+        sidebar.addView(TextView(this).apply {
+            text = "拾页 · Inspiration\nby OpenALC"; textSize = 17f; setTextColor(ink)
+            setPadding(dp(22), dp(25), dp(12), dp(26))
+        })
+        val scroll = ScrollView(this)
+        val links = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(10), 0, dp(10), 0) }
+        scroll.addView(links)
+        sidebar.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        fun row(label: String, click: () -> Unit): TextView {
+            val view = TextView(this).apply {
+                text = label; textSize = 15f; setTextColor(ink); gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(16), 0, dp(8), 0); background = rounded(Color.TRANSPARENT, 14)
+                setOnClickListener { click() }
+            }
+            links.addView(view, LinearLayout.LayoutParams(-1, dp(52)))
+            return view
+        }
+        row("全部笔记") { leavePrivate() }
+        row("隐私笔记") { enterPrivate() }
+        links.addView(TextView(this).apply { text = "分组"; textSize = 13f; setTextColor(secondary); setPadding(dp(16), dp(20), 0, dp(9)) })
+        for (group in allGroups) row(group.name) { leavePrivate(); groupId = group.id; renderFilters(); renderCards() }
+            .setOnLongClickListener { groupOptions(group); true }
+        row("＋  新建分组") { groupDialog() }
+        sidebar.addView(TextView(this).apply {
+            text = "⚙  设置"; textSize = 15f; setTextColor(ink); gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(26), 0, 0, 0); setOnClickListener { openSettings() }
+        }, LinearLayout.LayoutParams(-1, dp(58)))
+    }
+
     private fun closeDrawer() {
         val overlay = drawerOverlay ?: return
         drawerOverlay = null
         val panel = overlay.getChildAt(1)
         overlay.getChildAt(0).animate().alpha(0f).setDuration(200).start()
         panel.animate().translationX(-panel.width.toFloat()).setDuration(220).withEndAction { root.removeView(overlay) }.start()
+    }
+
+    private fun groupOptions(group: NoteGroup) {
+        MaterialAlertDialogBuilder(this).setTitle(group.name).setItems(arrayOf("重命名", "删除分组")) { _, option ->
+            if (option == 0) {
+                val input = EditText(this).apply { setSingleLine(true); setText(group.name); selectAll() }
+                MaterialAlertDialogBuilder(this).setTitle("重命名分组").setView(input)
+                    .setNegativeButton("取消", null).setPositiveButton("保存") { _, _ ->
+                        val name = input.text.toString().trim()
+                        if (name.isNotEmpty()) io.execute {
+                            store.renameGroup(group.copy(name = name)); runOnUiThread { refresh() }
+                        }
+                    }.show()
+            } else MaterialAlertDialogBuilder(this).setTitle("删除分组？")
+                .setMessage("分组中的笔记会移到未分组。")
+                .setNegativeButton("取消", null).setPositiveButton("删除") { _, _ ->
+                    io.execute { store.removeGroup(group.id); runOnUiThread { groupId = null; refresh() } }
+                }.show()
+        }.show()
     }
 
     private fun openSettings() {
@@ -568,7 +984,7 @@ class MainActivity : AppCompatActivity() {
         }
         row("普通笔记", "直接打开 · 本地加密")
         row("隐私笔记", "系统锁屏密码或生物识别") { closeSettings(); enterPrivate() }
-        row("从拾页导入", "选择旧版导出的迁移 ZIP") { pickTransfer() }
+        row("导入笔记", "拾页迁移 ZIP、Markdown、纯文本、小米笔记副本") { pickTransfer() }
         row("关于拾页 Native", "Android 原生单机版 · OpenALC · MIT") {
             MaterialAlertDialogBuilder(this).setTitle("拾页 · Inspiration")
                 .setMessage("Android 原生单机版 0.1.0\nGitHub: github.com/OpenALC/insp\nMIT License")
@@ -587,6 +1003,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun leavePrivate() {
+        if (privateArea) thumbnails.evictAll()
         privateGeneration++
         privateArea = false; groupId = null; allNotes = emptyList(); renderCards()
         io.execute { store.lockPrivate() }
@@ -616,12 +1033,16 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
+        if (selectionMode) clearSelection()
         persistNow()
         io.execute { store.lockPrivate() }
         if (privateArea) {
             privateGeneration++
+            thumbnails.evictAll()
             privateArea = false; groupId = null
             editor.visibility = View.GONE; active = null; bodyInput = null; mindPanel = null
+            tabletPlaceholder?.visibility = View.VISIBLE
+            undoHistory.clear(); redoHistory.clear(); historyTask?.let(handler::removeCallbacks)
             allNotes = emptyList(); renderCards()
             refresh()
         }
@@ -641,9 +1062,31 @@ class MainActivity : AppCompatActivity() {
     private inner class Cards : RecyclerView.Adapter<Cards.Holder>() {
         private var notes = listOf<NativeNote>()
 
-        inner class Holder(val card: MaterialCardView, val title: TextView, val image: ImageView, val preview: TextView) : RecyclerView.ViewHolder(card)
+        inner class Holder(val card: MaterialCardView, val title: TextView, val image: ImageView, val preview: TextView, val mark: TextView) : RecyclerView.ViewHolder(card)
 
-        fun submit(items: List<NativeNote>) { notes = items; notifyDataSetChanged() }
+        fun submit(items: List<NativeNote>) {
+            val previous = notes
+            val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+                override fun getOldListSize() = previous.size
+                override fun getNewListSize() = items.size
+                override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int) =
+                    previous[oldItemPosition].id == items[newItemPosition].id
+                override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
+                    val old = previous[oldItemPosition]
+                    val new = items[newItemPosition]
+                    return old.title == new.title && old.body == new.body && old.groupId == new.groupId && old.private == new.private
+                }
+            })
+            notes = items
+            diff.dispatchUpdatesTo(this)
+        }
+
+        fun selectionChanged(id: String) {
+            val index = notes.indexOfFirst { it.id == id }
+            if (index >= 0) notifyItemChanged(index)
+        }
+
+        fun selectionChangedAll() { if (notes.isNotEmpty()) notifyItemRangeChanged(0, notes.size) }
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder {
             val card = MaterialCardView(this@MainActivity).apply {
@@ -665,18 +1108,31 @@ class MainActivity : AppCompatActivity() {
             content.addView(image, LinearLayout.LayoutParams(-1, dp(120)).apply { topMargin = dp(12) })
             content.addView(preview, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
             card.addView(content)
+            val mark = TextView(this@MainActivity).apply { textSize = 15f; gravity = Gravity.CENTER; visibility = View.GONE }
+            card.addView(mark, FrameLayout.LayoutParams(dp(28), dp(28), Gravity.END or Gravity.TOP).apply {
+                topMargin = dp(10); rightMargin = dp(10)
+            })
             card.layoutParams = RecyclerView.LayoutParams(-1, -2).apply { setMargins(dp(7), dp(6), dp(7), dp(6)) }
-            return Holder(card, title, image, preview)
+            return Holder(card, title, image, preview, mark)
         }
 
         override fun onBindViewHolder(holder: Holder, position: Int) {
             val note = notes[position]
+            holder.mark.visibility = if (selectionMode) View.VISIBLE else View.GONE
+            holder.mark.text = if (note.id in selectedIds) "✓" else ""
+            holder.mark.setTextColor(if (note.id in selectedIds) Color.BLACK else secondary)
+            holder.mark.background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(if (note.id in selectedIds) green else paper)
+                setStroke(dp(1), if (note.id in selectedIds) green else secondary)
+            }
             holder.title.text = note.title
             holder.preview.text = if (note.kind == "richtext") {
-                RichTextCodec.decode(note.body).apply {
+                RichTextCodec.decode(note.body, dark).apply {
                     for (index in length - 1 downTo 0) if (this[index] == '\uFFFC') replace(index, index + 1, "")
                 }.takeIf { it.isNotBlank() } ?: "空白笔记"
             } else preview(note).ifBlank { "点此添加分支" }
+            holder.image.tag = note.id
             holder.image.setImageDrawable(null)
             holder.image.visibility = View.GONE
             val imageId = if (note.kind == "richtext") {
@@ -686,20 +1142,25 @@ class MainActivity : AppCompatActivity() {
                 }
             } else null
             if (imageId != null) {
-                holder.image.tag = note.id
-                io.execute {
-                    val image = decodeImage(store.image(note, imageId), dp(250))
-                    runOnUiThread {
-                        if (holder.image.tag == note.id) {
-                            holder.image.setImageDrawable(image)
-                            holder.image.visibility = View.VISIBLE
+                val cached = thumbnails.get(imageId)
+                if (cached != null) { holder.image.setImageDrawable(cached); holder.image.visibility = View.VISIBLE }
+                else {
+                    val generation = privateGeneration
+                    io.execute {
+                        val image = decodeImage(store.image(note, imageId), dp(250))
+                        runOnUiThread {
+                            if (generation == privateGeneration) thumbnails.put(imageId, image)
+                            if (generation == privateGeneration && holder.image.tag == note.id) {
+                                holder.image.setImageDrawable(image)
+                                holder.image.visibility = View.VISIBLE
+                            }
                         }
                     }
                 }
             }
             holder.card.transitionName = "note-${note.id}"
-            holder.card.setOnClickListener { openNote(note, holder.card) }
-            holder.card.setOnLongClickListener { noteOptions(note); true }
+            holder.card.setOnClickListener { if (selectionMode) toggleSelection(note.id) else openNote(note, holder.card) }
+            holder.card.setOnLongClickListener { toggleSelection(note.id); true }
         }
 
         override fun getItemCount() = notes.size

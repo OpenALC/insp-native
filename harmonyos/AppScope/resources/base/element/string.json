@@ -1,0 +1,8 @@
+{
+  "string": [
+    { "name": "app_name", "value": "拾页 Native" },
+    { "name": "module_desc", "value": "原生单机笔记" },
+    { "name": "EntryAbility_desc", "value": "拾页 Native" },
+    { "name": "EntryAbility_label", "value": "拾页 Native" }
+  ]
+}

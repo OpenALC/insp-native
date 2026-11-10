@@ -36,6 +36,7 @@ object TransferImport {
                 zip.closeEntry()
             }
         }
+        if (!archive.containsKey("manifest.json")) return ExternalImport.fromZip(archive)
         val manifest = JSONObject(archive.getValue("manifest.json").toString(Charsets.UTF_8))
         require(manifest.getString("format") == "openalc.insp.transfer.v1")
         val groups = manifest.getJSONArray("groups").objects().map {

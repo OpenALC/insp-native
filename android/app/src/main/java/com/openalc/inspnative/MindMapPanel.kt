@@ -8,9 +8,11 @@ import android.graphics.RectF
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
+import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -42,6 +44,7 @@ class MindMapPanel(
 ) : LinearLayout(context) {
     private val rootNode = MindNode.read(JSONObject(note.body).getJSONObject("root"))
     private val list = LinearLayout(context).apply { orientation = VERTICAL }
+    private val nodeInputs = mutableMapOf<String, EditText>()
     private val scroll = ScrollView(context).apply { addView(list) }
     private val tree = MindTreeView(context, rootNode) { editNode(it) }
     private var treeMode = false
@@ -54,7 +57,10 @@ class MindMapPanel(
             textSize = 15f
             gravity = Gravity.CENTER
             setPadding(dp(18), 0, dp(18), 0)
-            setOnClickListener { rootNode.children.add(MindNode(UUID.randomUUID().toString(), "新分支")); update() }
+            setOnClickListener {
+                val node = MindNode(UUID.randomUUID().toString(), "新分支")
+                rootNode.children.add(node); update(node.id)
+            }
         }, LayoutParams(LayoutParams.WRAP_CONTENT, dp(48)))
         addView(tools, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         addView(scroll, LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f))
@@ -86,10 +92,19 @@ class MindMapPanel(
         tree.invalidate()
     }
 
-    private fun update() { save(); renderList() }
+    private fun update(focusId: String? = null) {
+        save(); renderList()
+        if (focusId != null) post {
+            nodeInputs[focusId]?.apply {
+                requestFocus()
+                if (text.toString() == "新分支") selectAll() else setSelection(text.length)
+            }
+        }
+    }
 
     private fun renderList() {
         list.removeAllViews()
+        nodeInputs.clear()
         if (rootNode.children.isEmpty()) list.addView(TextView(context).apply {
             text = "点击“＋ 分支”，从一个想法开始。"
             textSize = 16f
@@ -105,9 +120,19 @@ class MindMapPanel(
         }
         val input = EditText(context).apply {
             setSingleLine(true)
+            imeOptions = EditorInfo.IME_ACTION_NEXT
             setText(node.text)
             textSize = 16f
             background = null
+            setOnEditorActionListener { _, action, event ->
+                if (action == EditorInfo.IME_ACTION_NEXT ||
+                    (event?.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN)) {
+                    val next = MindNode(UUID.randomUUID().toString(), "新分支")
+                    parent.children.add(parent.children.indexOf(node) + 1, next)
+                    update(next.id)
+                    true
+                } else false
+            }
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
@@ -117,12 +142,16 @@ class MindMapPanel(
                 override fun afterTextChanged(s: Editable?) = Unit
             })
         }
+        nodeInputs[node.id] = input
         row.addView(input, LayoutParams(0, dp(46), 1f))
         row.addView(TextView(context).apply {
             text = "＋"
             textSize = 24f
             gravity = Gravity.CENTER
-            setOnClickListener { node.children.add(MindNode(UUID.randomUUID().toString(), "新分支")); update() }
+            setOnClickListener {
+                val child = MindNode(UUID.randomUUID().toString(), "新分支")
+                node.children.add(child); update(child.id)
+            }
         }, LayoutParams(dp(42), dp(42)))
         row.addView(TextView(context).apply {
             text = "⋯"
@@ -148,7 +177,7 @@ class MindMapPanel(
                 }
                 4 -> parent.children.remove(node)
             }
-            update()
+            update(if (choice == 4) null else node.id)
         }.show()
     }
 

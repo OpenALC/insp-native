@@ -4,3 +4,7 @@
 **/local.properties
 *.iml
 .artifacts/
+**/.hvigor/
+**/oh_modules/
+**/node_modules/
+harmonyos/build-profile.json5
