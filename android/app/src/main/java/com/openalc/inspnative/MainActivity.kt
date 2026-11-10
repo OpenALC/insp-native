@@ -17,6 +17,7 @@ import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
+import android.net.Uri
 import android.text.Editable
 import android.text.Spannable
 import android.text.Spanned
@@ -67,6 +68,8 @@ class MainActivity : AppCompatActivity() {
     private var bodyInput: EditText? = null
     private var mindPanel: MindMapPanel? = null
     private var saveTask: Runnable? = null
+    private var pendingImageNoteId: String? = null
+    private var pendingImagePrivate = false
     private var groupId: String? = null
     private var privateArea = false
     private var privateGeneration = 0
@@ -295,6 +298,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun format(command: String) {
         if (command == "image") {
+            pendingImageNoteId = active?.id
+            pendingImagePrivate = active?.private == true
             val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply { type = "image/*"; addCategory(Intent.CATEGORY_OPENABLE) }
             startActivityForResult(intent, 700)
             return
@@ -336,19 +341,47 @@ class MainActivity : AppCompatActivity() {
             }
             return
         }
-        if (requestCode != 700 || resultCode != Activity.RESULT_OK) return
-        val note = active ?: return
+        if (requestCode != 700) return
+        if (resultCode != Activity.RESULT_OK) { pendingImageNoteId = null; return }
+        val noteId = pendingImageNoteId ?: return
+        val isPrivate = pendingImagePrivate
+        pendingImageNoteId = null
         val uri = data?.data ?: return
+        if (isPrivate && !privateArea) authenticate { importPickedImage(noteId, uri, true) }
+        else importPickedImage(noteId, uri, isPrivate)
+    }
+
+    private fun importPickedImage(noteId: String, uri: Uri, isPrivate: Boolean) {
         io.execute {
-            val bytes = contentResolver.openInputStream(uri)!!.use { it.readBytes() }
-            val id = store.addImage(note, bytes, contentResolver.getType(uri) ?: "image/jpeg")
-            val drawable = decodeImage(bytes)
-            runOnUiThread {
-                val input = bodyInput ?: return@runOnUiThread
-                val start = input.selectionStart.coerceAtLeast(0)
-                input.text.insert(start, "\n\uFFFC\n")
-                input.text.setSpan(ImageSpan(drawable, id), start + 1, start + 2, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-                scheduleSave()
+            try {
+                val note = store.notes(isPrivate).first { it.id == noteId }
+                val bytes = contentResolver.openInputStream(uri)!!.use { it.readBytes() }
+                val id = store.addImage(note, bytes, contentResolver.getType(uri) ?: "image/jpeg")
+                val drawable = decodeImage(bytes)
+                runOnUiThread {
+                    val input = bodyInput?.takeIf { active?.id == noteId }
+                    if (input != null) {
+                        val start = input.selectionStart.coerceAtLeast(0)
+                        input.text.insert(start, "\n\uFFFC\n")
+                        input.text.setSpan(ImageSpan(drawable, id), start + 1, start + 2, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                        scheduleSave()
+                    } else {
+                        io.execute {
+                            val document = RichTextCodec.decode(note.body) { imageDrawable(note, it) }
+                            val start = document.length
+                            document.append("\n\uFFFC\n")
+                            document.setSpan(ImageSpan(drawable, id), start + 1, start + 2, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                            note.body = RichTextCodec.encode(document)
+                            store.save(note)
+                            runOnUiThread {
+                                if (isPrivate) { privateArea = true; groupId = null }
+                                refresh(); openNote(note, null)
+                            }
+                        }
+                    }
+                }
+            } catch (error: Exception) {
+                runOnUiThread { toast("图片无法插入：${error.message}") }
             }
         }
     }
