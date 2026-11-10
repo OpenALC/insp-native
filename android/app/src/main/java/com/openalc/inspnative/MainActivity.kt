@@ -679,8 +679,7 @@ class MainActivity : AppCompatActivity() {
         }
         fields.addView(label, LinearLayout.LayoutParams(-1, dp(50)).apply { bottomMargin = dp(12) })
         fields.addView(address, LinearLayout.LayoutParams(-1, dp(50)))
-        MaterialAlertDialogBuilder(this).setTitle("插入链接").setView(fields)
-            .setNegativeButton("取消", null).setPositiveButton("完成") { _, _ ->
+        showFormSheet("插入链接", fields, "完成") {
                 val text = label.text.toString().ifBlank { address.text.toString() }
                 val url = address.text.toString().trim()
                 if (url.isNotBlank() && text.isNotBlank()) {
@@ -688,7 +687,7 @@ class MainActivity : AppCompatActivity() {
                     input.text.setSpan(URLSpan(url), start, start + text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                     scheduleSave()
                 }
-            }.show()
+            }
     }
 
     @Deprecated("Uses the platform document picker result")
@@ -906,6 +905,40 @@ class MainActivity : AppCompatActivity() {
         }, LinearLayout.LayoutParams(-1, dp(48)))
         sheet.setContentView(content)
         sheet.show()
+        sheet.findViewById<View>(com.google.android.material.R.id.design_bottom_sheet)?.setBackgroundColor(Color.TRANSPARENT)
+    }
+
+    private fun showFormSheet(title: String, fields: View, actionLabel: String, submit: () -> Unit) {
+        val sheet = BottomSheetDialog(this)
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(12), dp(18), dp(24))
+            background = rounded(paper, 28)
+        }
+        content.addView(TextView(this).apply {
+            text = title; textSize = 23f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink)
+            setPadding(dp(12), dp(12), dp(12), dp(14))
+        })
+        content.addView(fields, LinearLayout.LayoutParams(-1, -2))
+        val actions = LinearLayout(this).apply { gravity = Gravity.END or Gravity.CENTER_VERTICAL }
+        actions.addView(action("取消") { sheet.dismiss() }, LinearLayout.LayoutParams(dp(76), dp(48)))
+        actions.addView(action(actionLabel) { sheet.dismiss(); submit() }, LinearLayout.LayoutParams(dp(76), dp(48)))
+        content.addView(actions, LinearLayout.LayoutParams(-1, dp(58)))
+        sheet.setContentView(content)
+        sheet.show()
+        sheet.findViewById<View>(com.google.android.material.R.id.design_bottom_sheet)?.setBackgroundColor(Color.TRANSPARENT)
+    }
+
+    fun showTextInputSheet(title: String, hint: String, initial: String = "", submit: (String) -> Unit) {
+        val input = EditText(this).apply {
+            setSingleLine(true); this.hint = hint; setText(initial); selectAll()
+            setTextColor(ink); setHintTextColor(secondary)
+            background = rounded(if (dark) 0xff30342e.toInt() else 0xfff4f6f2.toInt(), 14)
+            setPadding(dp(16), 0, dp(16), 0)
+        }
+        showFormSheet(title, input.apply { minimumHeight = dp(52) }, "完成") {
+            input.text.toString().trim().takeIf(String::isNotEmpty)?.let(submit)
+        }
     }
 
     private fun pickTransfer() {
@@ -928,12 +961,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun groupDialog() {
-        val input = EditText(this).apply { hint = "分组名称"; setSingleLine(true) }
-        MaterialAlertDialogBuilder(this).setTitle("新建分组").setView(input).setNegativeButton("取消", null)
-            .setPositiveButton("创建") { _, _ ->
-                val name = input.text.toString().trim()
-                if (name.isNotEmpty()) io.execute { store.addGroup(name); runOnUiThread { refresh() } }
-            }.show()
+        showTextInputSheet("新建分组", "分组名称") { name ->
+            io.execute { store.addGroup(name); runOnUiThread { refresh() } }
+        }
     }
 
     private fun openDrawer() {
@@ -1034,22 +1064,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun groupOptions(group: NoteGroup) {
-        MaterialAlertDialogBuilder(this).setTitle(group.name).setItems(arrayOf("重命名", "删除分组")) { _, option ->
+        showSheet(group.name, arrayOf("重命名", "删除分组")) { option ->
             if (option == 0) {
-                val input = EditText(this).apply { setSingleLine(true); setText(group.name); selectAll() }
-                MaterialAlertDialogBuilder(this).setTitle("重命名分组").setView(input)
-                    .setNegativeButton("取消", null).setPositiveButton("保存") { _, _ ->
-                        val name = input.text.toString().trim()
-                        if (name.isNotEmpty()) io.execute {
-                            store.renameGroup(group.copy(name = name)); runOnUiThread { refresh() }
-                        }
-                    }.show()
+                showTextInputSheet("重命名分组", "分组名称", group.name) { name ->
+                    io.execute { store.renameGroup(group.copy(name = name)); runOnUiThread { refresh() } }
+                }
             } else MaterialAlertDialogBuilder(this).setTitle("删除分组？")
                 .setMessage("分组中的笔记会移到未分组。")
                 .setNegativeButton("取消", null).setPositiveButton("删除") { _, _ ->
                     io.execute { store.removeGroup(group.id); runOnUiThread { groupId = null; refresh() } }
                 }.show()
-        }.show()
+        }
     }
 
     private fun openSettings() {

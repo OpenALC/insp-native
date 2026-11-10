@@ -19,7 +19,6 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -187,9 +186,10 @@ class MindMapPanel(
     }
 
     private fun editNode(node: MindNode) {
-        val input = EditText(context).apply { setText(node.text); selectAll() }
-        MaterialAlertDialogBuilder(context).setTitle("编辑分支").setView(input)
-            .setNegativeButton("取消", null).setPositiveButton("完成") { _, _ -> node.text = input.text.toString(); update() }.show()
+        (context as MainActivity).showTextInputSheet("编辑分支", "分支内容", node.text) { value ->
+            node.text = value
+            update()
+        }
     }
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
