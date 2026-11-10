@@ -1,6 +1,10 @@
 import { common } from '@kit.AbilityKit';
-import { display } from '@kit.ArkUI';
+import { display, window } from '@kit.ArkUI';
+import { fileIo, picker } from '@kit.CoreFileKit';
+import { util } from '@kit.ArkTS';
+import { promptAction } from '@kit.ArkUI';
 import { NativeStore, NativeNote, NoteGroup, MindBranch, newId, newNote } from '../data/NativeStore';
+import { RichDocument, RichMark, markdownRich, readRich, richSegments } from '../data/RichDocument';
 
 interface MindDocument {
   type: string;
@@ -36,13 +40,32 @@ struct Index {
   @State private noteOptions: boolean = false;
   @State private movingGroup: boolean = false;
   private saveTimer: number = -1;
+  private richController: RichEditorController = new RichEditorController();
+  private richOptions: RichEditorOptions = { controller: this.richController };
+  private richReady: boolean = false;
+  private richLoading: boolean = false;
 
   aboutToAppear(): void {
     const screen = display.getDefaultDisplaySync();
     this.tablet = screen.width / screen.densityPixels >= 600;
     NativeStore.open(getContext(this) as common.UIAbilityContext).then((store: NativeStore): void => {
       this.store = store;
+      this.dark = store.dark;
+      this.syncSystemBars();
       this.refresh();
+    });
+  }
+
+  private async syncSystemBars(): Promise<void> {
+    const context = getContext(this) as common.UIAbilityContext;
+    const current = await window.getLastWindow(context);
+    await current.setWindowSystemBarProperties({
+      statusBarColor: this.dark ? '#171B16' : '#F5F7F2',
+      navigationBarColor: this.dark ? '#171B16' : '#F5F7F2',
+      statusBarContentColor: this.dark ? '#D8DED4' : '#141914',
+      navigationBarContentColor: this.dark ? '#D8DED4' : '#141914',
+      enableStatusBarAnimation: true,
+      enableNavigationBarAnimation: true
     });
   }
 
@@ -81,7 +104,8 @@ struct Index {
   private visibleNotes(): NativeNote[] {
     return this.notes.filter((note: NativeNote): boolean => {
       const groupMatches = this.groupId === 'all' || note.groupId === this.groupId;
-      const wordsMatch = this.search === '' || (note.title + ' ' + note.body).toLowerCase().includes(this.search.toLowerCase());
+      const content = note.kind === 'mindmap' ? this.mindText((JSON.parse(note.body) as MindDocument).root) : readRich(note.body).text;
+      const wordsMatch = this.search === '' || (note.title + ' ' + content).toLowerCase().includes(this.search.toLowerCase());
       return groupMatches && wordsMatch;
     });
   }
@@ -111,6 +135,10 @@ struct Index {
     this.refreshBranches();
     this.drawer = false;
     this.settings = false;
+    if (note.kind === 'richtext') {
+      const id = note.id;
+      setTimeout((): void => { if (this.activeId === id) this.loadRich(); }, 0);
+    }
   }
 
   private leaveEditor(): void {
@@ -134,6 +162,7 @@ struct Index {
     }
     const note = this.activeNote();
     if (note === null) return;
+    if (note.kind === 'richtext' && this.richReady) this.body = this.snapshotRich();
     note.title = this.title.trim() || (note.kind === 'mindmap' ? '未命名的灵感笔记' : '未命名笔记');
     note.body = this.body;
     note.updatedAt = Date.now();
@@ -143,6 +172,95 @@ struct Index {
   private storeSave(): void {
     if (this.privateOpen) this.store?.savePrivate();
     else this.store?.saveNormal();
+  }
+
+  private loadRich(): void {
+    if (!this.richReady || this.activeNote()?.kind !== 'richtext') return;
+    const document = readRich(this.body);
+    this.richLoading = true;
+    this.richController.deleteSpans();
+    const points = richSegments(document);
+    for (let index = 0; index < points.length - 1; index++) {
+      const start = points[index];
+      const end = points[index + 1];
+      const active = document.spans.filter((mark: RichMark): boolean => mark.start <= start && mark.end >= end);
+      const bold = active.some((mark: RichMark): boolean => mark.type === 'bold');
+      const italic = active.some((mark: RichMark): boolean => mark.type === 'italic');
+      const underline = active.some((mark: RichMark): boolean => mark.type === 'underline');
+      const strike = active.some((mark: RichMark): boolean => mark.type === 'strike');
+      const heading = active.some((mark: RichMark): boolean => mark.type === 'heading');
+      const highlight = active.some((mark: RichMark): boolean => mark.type === 'highlight');
+      this.richController.addTextSpan(document.text.slice(start, end), {
+        style: {
+          fontColor: this.dark ? '#D8DED4' : '#141914',
+          fontSize: heading ? 24 : 18,
+          fontWeight: bold ? FontWeight.Bold : FontWeight.Normal,
+          fontStyle: italic ? FontStyle.Italic : FontStyle.Normal,
+          decoration: { type: underline ? TextDecorationType.Underline : (strike ? TextDecorationType.LineThrough : TextDecorationType.None) },
+          textBackgroundStyle: { color: highlight ? '#6654D81B' : '#00000000', radius: 3 }
+        }
+      });
+    }
+    this.richLoading = false;
+  }
+
+  private snapshotRich(): string {
+    let text = '';
+    const marks: RichMark[] = [];
+    this.richController.getSpans().forEach((part: RichEditorTextSpanResult | RichEditorImageSpanResult): void => {
+      if (typeof (part as RichEditorTextSpanResult).textStyle === 'undefined') return;
+      const span = part as RichEditorTextSpanResult;
+      const start = text.length;
+      text += span.value;
+      const end = text.length;
+      const style = span.textStyle;
+      if (style.fontWeight >= 6 && style.fontWeight <= 9 || style.fontWeight === 11) marks.push({ type: 'bold', start: start, end: end });
+      if (style.fontStyle === FontStyle.Italic) marks.push({ type: 'italic', start: start, end: end });
+      if (style.decoration?.type === TextDecorationType.Underline) marks.push({ type: 'underline', start: start, end: end });
+      if (style.decoration?.type === TextDecorationType.LineThrough) marks.push({ type: 'strike', start: start, end: end });
+      if (style.fontSize >= 22) marks.push({ type: 'heading', start: start, end: end, scale: 1.35 });
+      if (this.highlighted(style.textBackgroundStyle?.color)) marks.push({ type: 'highlight', start: start, end: end });
+    });
+    const document: RichDocument = { version: 1, text: text, spans: marks };
+    return JSON.stringify(document);
+  }
+
+  private highlighted(color: ResourceColor | undefined): boolean {
+    return color === '#6654D81B' || color === 0x6654D81B;
+  }
+
+  private changedRich(): void {
+    if (this.richLoading) return;
+    this.scheduleSave();
+  }
+
+  private formatRich(kind: string): void {
+    const selection = this.richController.getSelection().selection;
+    if (selection[0] === selection[1]) return;
+    const spans = this.richController.getSpans({ start: selection[0], end: selection[1] });
+    const first = spans[0] as RichEditorTextSpanResult;
+    const style = first.textStyle;
+    if (kind === 'bold') {
+      const enabled = style.fontWeight >= 6 && style.fontWeight <= 9 || style.fontWeight === 11;
+      this.richController.updateSpanStyle({ start: selection[0], end: selection[1],
+        textStyle: { fontWeight: enabled ? FontWeight.Normal : FontWeight.Bold } });
+    } else if (kind === 'italic') {
+      this.richController.updateSpanStyle({ start: selection[0], end: selection[1],
+        textStyle: { fontStyle: style.fontStyle === FontStyle.Italic ? FontStyle.Normal : FontStyle.Italic } });
+    } else if (kind === 'heading') {
+      this.richController.updateSpanStyle({ start: selection[0], end: selection[1],
+        textStyle: { fontSize: style.fontSize >= 22 ? 18 : 24, fontWeight: FontWeight.Bold } });
+    } else if (kind === 'highlight') {
+      this.richController.updateSpanStyle({ start: selection[0], end: selection[1],
+        textStyle: { textBackgroundStyle: {
+          color: this.highlighted(style.textBackgroundStyle?.color) ? '#00000000' : '#6654D81B', radius: 3
+        } } });
+    } else {
+      const type = kind === 'underline' ? TextDecorationType.Underline : TextDecorationType.LineThrough;
+      this.richController.updateSpanStyle({ start: selection[0], end: selection[1],
+        textStyle: { decoration: { type: style.decoration?.type === type ? TextDecorationType.None : type } } });
+    }
+    this.changedRich();
   }
 
   private async enterPrivate(): Promise<void> {
@@ -197,6 +315,75 @@ struct Index {
     this.noteOptions = false;
     this.storeSave();
     this.refresh();
+  }
+
+  private async importTextFile(): Promise<void> {
+    if (this.store === null) return;
+    const context = getContext(this) as common.UIAbilityContext;
+    const options = new picker.DocumentSelectOptions();
+    options.maxSelectNumber = 1;
+    options.fileSuffixFilters = ['Text|.txt, .md, .markdown'];
+    const uris = await new picker.DocumentViewPicker(context).select(options);
+    if (uris.length === 0) return;
+    const file = fileIo.openSync(uris[0], fileIo.OpenMode.READ_ONLY);
+    const bytes: number[] = [];
+    try {
+      let count = 0;
+      do {
+        const buffer = new ArrayBuffer(8192);
+        count = fileIo.readSync(file.fd, buffer);
+        const chunk = new Uint8Array(buffer);
+        for (let index = 0; index < count; index++) bytes.push(chunk[index]);
+      } while (count > 0 && bytes.length <= 10 * 1024 * 1024);
+    } finally {
+      fileIo.closeSync(file);
+    }
+    if (bytes.length > 10 * 1024 * 1024) {
+      promptAction.showToast({ message: '文件超过 10 MB' });
+      return;
+    }
+    const content = util.TextDecoder.create('utf-8').decodeToString(new Uint8Array(bytes));
+    const filename = decodeURIComponent(uris[0].split('/').pop() ?? '导入笔记.txt').split('?')[0];
+    const note = newNote('richtext', null, false);
+    note.title = filename.replace(/\.(txt|md|markdown)$/i, '') || '导入笔记';
+    note.body = filename.toLowerCase().endsWith('.txt')
+      ? JSON.stringify({ version: 1, text: content, spans: [] }) : JSON.stringify(markdownRich(content));
+    this.store.notes.unshift(note);
+    this.store.saveNormal();
+    this.settings = false;
+    this.refresh();
+    this.open(note);
+  }
+
+  private async exportTextFile(): Promise<void> {
+    this.saveNow();
+    const note = this.activeNote();
+    if (note === null) return;
+    const context = getContext(this) as common.UIAbilityContext;
+    const options = new picker.DocumentSaveOptions();
+    options.newFileNames = [note.title.replace(/[\\/:*?"<>|]/g, '_') + '.txt'];
+    const uris = await new picker.DocumentViewPicker(context).save(options);
+    if (uris.length === 0) return;
+    const content = note.kind === 'mindmap' ? this.mindText((JSON.parse(note.body) as MindDocument).root)
+      : readRich(note.body).text;
+    const file = fileIo.openSync(uris[0], fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
+    try {
+      fileIo.writeSync(file.fd, content);
+    } finally {
+      fileIo.closeSync(file);
+    }
+    this.noteOptions = false;
+    promptAction.showToast({ message: '已导出纯文本' });
+  }
+
+  private mindText(root: MindBranch): string {
+    const lines: string[] = [root.text];
+    const visit = (node: MindBranch, depth: number): void => {
+      lines.push('  '.repeat(depth) + '- ' + node.text);
+      node.children.forEach((child: MindBranch): void => visit(child, depth + 1));
+    };
+    root.children.forEach((child: MindBranch): void => visit(child, 0));
+    return lines.join('\n');
   }
 
   private mindRoot(): MindBranch {
@@ -256,6 +443,8 @@ struct Index {
     const branch = this.findBranch(root, id);
     if (branch === null) return;
     branch.text = text;
+    const row = this.rows.find((item: BranchRow): boolean => item.id === id);
+    if (row !== undefined) row.text = text;
     this.updateMind(root, false);
   }
 
@@ -369,7 +558,7 @@ struct Index {
   }
 
   private preview(note: NativeNote): string {
-    if (note.kind !== 'mindmap') return note.body.replace(/\s+/g, ' ').slice(0, 180);
+    if (note.kind !== 'mindmap') return readRich(note.body).text.replace(/\s+/g, ' ').slice(0, 180);
     const root = (JSON.parse(note.body) as MindDocument).root;
     return root.children.map((node: MindBranch): string => node.text).join(' · ');
   }
@@ -408,6 +597,9 @@ struct Index {
           Button('删除笔记').fontColor(this.dark ? '#D8DED4' : '#141914')
             .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
             .onClick((): void => this.deleteCurrent())
+          Button('导出纯文本').fontColor(this.dark ? '#D8DED4' : '#141914')
+            .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+            .onClick((): void => { this.exportTextFile(); })
         }.width('100%').padding({ left: 18, right: 18, bottom: 10 })
         if (this.movingGroup) {
           Scroll() {
@@ -449,10 +641,35 @@ struct Index {
           }.width('100%').padding(18)
         }.layoutWeight(1)
       } else {
-        TextArea({ text: this.body, placeholder: '开始记录…' })
-          .fontSize(18).fontColor(this.dark ? '#D8DED4' : '#141914').backgroundColor(this.dark ? '#171B16' : '#F5F7F2')
+        RichEditor(this.richOptions)
+          .placeholder('开始记录…')
+          .caretColor('#54D81B')
+          .backgroundColor(this.dark ? '#171B16' : '#F5F7F2')
           .padding(22).layoutWeight(1).width('100%')
-          .onChange((value: string): void => { this.body = value; this.scheduleSave(); })
+          .onReady((): void => { this.richReady = true; this.loadRich(); })
+          .onDidChange((): void => this.changedRich())
+        Scroll() {
+          Row({ space: 8 }) {
+            Button('H').fontColor(this.dark ? '#D8DED4' : '#141914')
+              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+              .onClick((): void => this.formatRich('heading'))
+            Button('B').fontColor(this.dark ? '#D8DED4' : '#141914')
+              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+              .onClick((): void => this.formatRich('bold'))
+            Button('I').fontColor(this.dark ? '#D8DED4' : '#141914')
+              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+              .onClick((): void => this.formatRich('italic'))
+            Button('U').fontColor(this.dark ? '#D8DED4' : '#141914')
+              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+              .onClick((): void => this.formatRich('underline'))
+            Button('S').fontColor(this.dark ? '#D8DED4' : '#141914')
+              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+              .onClick((): void => this.formatRich('strike'))
+            Button('M').fontColor(this.dark ? '#D8DED4' : '#141914')
+              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+              .onClick((): void => this.formatRich('highlight'))
+          }
+        }.scrollable(ScrollDirection.Horizontal).width('100%').padding(12)
       }
     }.layoutWeight(1).height('100%').backgroundColor(this.dark ? '#171B16' : '#F5F7F2')
   }
@@ -465,13 +682,22 @@ struct Index {
         Text('设置').fontSize(25).fontWeight(FontWeight.Bold).fontColor(this.dark ? '#D8DED4' : '#141914')
       }.width('100%')
       Row() {
-        Text('暗色模式').fontSize(17).fontColor(this.dark ? '#D8DED4' : '#141914').layoutWeight(1)
-        Toggle({ type: ToggleType.Switch, isOn: this.dark }).onChange((value: boolean): void => { this.dark = value; })
-      }.padding(18).backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18).width('100%')
+        Text('暗色模式').fontSize(17).fontColor(this.dark ? '#D8DED4' : '#141914')
+        Toggle({ type: ToggleType.Switch, isOn: this.dark }).selectedColor('#54D81B')
+          .width(54)
+          .onChange((value: boolean): void => {
+            this.dark = value;
+            this.syncSystemBars();
+            if (this.store !== null) { this.store.dark = value; this.store.saveNormal(); }
+          })
+      }.justifyContent(FlexAlign.SpaceBetween).padding(18)
+        .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18).width('100%')
+      Button('从纯文本 / Markdown 导入').fontColor('#141914').backgroundColor('#54D81B')
+        .onClick((): void => { this.importTextFile(); })
       Text('关于拾页 Native\n原生单机版 · MIT\nOpenALC').fontSize(15).lineHeight(26)
         .fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%').padding(18).backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
       Blank()
-    }.padding(24).width('100%').height('100%').backgroundColor(this.dark ? '#171B16' : '#F5F7F2')
+    }.padding(24).layoutWeight(1).height('100%').backgroundColor(this.dark ? '#171B16' : '#F5F7F2')
   }
 
   build() {
@@ -498,4 +724,3 @@ struct Index {
     }.width('100%').height('100%').backgroundColor(this.dark ? '#171B16' : '#F5F7F2')
   }
 }
-

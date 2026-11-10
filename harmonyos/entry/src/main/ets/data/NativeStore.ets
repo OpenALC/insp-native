@@ -27,6 +27,7 @@ export class NativeStore {
   groups: NoteGroup[] = [];
   notes: NativeNote[] = [];
   privateNotes: NativeNote[] = [];
+  dark: boolean = false;
   private pending: Promise<void> = Promise.resolve();
 
   private constructor(security: DeviceSecurity) {
@@ -40,6 +41,7 @@ export class NativeStore {
       const data = JSON.parse(normal) as WorkspaceData;
       store.groups = data.groups;
       store.notes = data.notes;
+      store.dark = data.dark ?? false;
     }
     return store;
   }
@@ -58,7 +60,7 @@ export class NativeStore {
   }
 
   saveNormal(): Promise<void> {
-    const value = JSON.stringify({ groups: this.groups, notes: this.notes });
+    const value = JSON.stringify({ groups: this.groups, notes: this.notes, dark: this.dark });
     this.pending = this.pending.then((): Promise<void> => this.security.setSecret('native-workspace-v1', value));
     return this.pending;
   }
@@ -82,6 +84,7 @@ export class NativeStore {
 interface WorkspaceData {
   groups: NoteGroup[];
   notes: NativeNote[];
+  dark?: boolean;
 }
 
 export function newId(): string {
@@ -93,7 +96,8 @@ export function newNote(kind: string, groupId: string | null, privacy: boolean):
   const root: MindBranch = { id: newId(), text: title, children: [] };
   return {
     id: newId(), title: title,
-    body: kind === 'mindmap' ? JSON.stringify({ type: 'mindmap', root: root }) : '',
+    body: kind === 'mindmap' ? JSON.stringify({ type: 'mindmap', root: root })
+      : JSON.stringify({ version: 1, text: '', spans: [] }),
     kind: kind, groupId: groupId, private: privacy, updatedAt: Date.now()
   };
 }

@@ -63,7 +63,7 @@ object NativeExport {
         val output = if (note.kind == "mindmap") {
             val lines = mutableListOf<String>()
             fun visit(node: JSONObject, depth: Int) {
-                lines += if (depth == 0) "# ${node.getString("text")}" else "  ".repeat(depth - 1) + "- ${node.getString("text")}" 
+                lines += if (depth == 0) "# ${node.getString("text")}" else "  ".repeat(depth - 1) + "- ${node.getString("text")}"
                 val children = node.getJSONArray("children")
                 for (index in 0 until children.length()) visit(children.getJSONObject(index), depth + 1)
             }

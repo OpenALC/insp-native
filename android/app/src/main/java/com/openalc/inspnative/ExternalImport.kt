@@ -72,7 +72,7 @@ object ExternalImport {
                     index += link.value.length
                     continue
                 }
-                val wrappers = listOf("**" to "bold", "~~" to "strike", "<u>" to "underline", "<mark>" to "highlight", "*" to "italic")
+                val wrappers = listOf("**" to "bold", "~~" to "strike", "<u>" to "underline", "<mark>" to "highlight", "==" to "highlight", "*" to "italic")
                 val wrapper = wrappers.firstOrNull { line.startsWith(it.first, index) }
                 if (wrapper != null) {
                     val closing = when (wrapper.first) { "<u>" -> "</u>"; "<mark>" -> "</mark>"; else -> wrapper.first }
