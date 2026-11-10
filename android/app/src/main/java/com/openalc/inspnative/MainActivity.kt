@@ -672,7 +672,11 @@ class MainActivity : AppCompatActivity() {
         override fun onBindViewHolder(holder: Holder, position: Int) {
             val note = notes[position]
             holder.title.text = note.title
-            holder.preview.text = preview(note).ifBlank { if (note.kind == "mindmap") "点此添加分支" else "空白笔记" }
+            holder.preview.text = if (note.kind == "richtext") {
+                RichTextCodec.decode(note.body).apply {
+                    for (index in length - 1 downTo 0) if (this[index] == '\uFFFC') replace(index, index + 1, "")
+                }.takeIf { it.isNotBlank() } ?: "空白笔记"
+            } else preview(note).ifBlank { "点此添加分支" }
             holder.image.setImageDrawable(null)
             holder.image.visibility = View.GONE
             val imageId = if (note.kind == "richtext") {
