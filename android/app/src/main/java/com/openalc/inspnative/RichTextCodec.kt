@@ -5,11 +5,13 @@ import android.graphics.drawable.Drawable
 import android.text.Spannable
 import android.text.SpannableStringBuilder
 import android.text.Spanned
+import android.text.TextPaint
 import android.text.style.AlignmentSpan
 import android.text.style.BulletSpan
 import android.text.style.BackgroundColorSpan
 import android.text.style.ImageSpan
 import android.text.style.LeadingMarginSpan
+import android.text.style.MetricAffectingSpan
 import android.text.style.QuoteSpan
 import android.text.style.RelativeSizeSpan
 import android.text.style.StyleSpan
@@ -21,6 +23,22 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 object RichTextCodec {
+    private class CommentTextSpan(private val color: Int) : MetricAffectingSpan() {
+        override fun updateDrawState(paint: TextPaint) {
+            paint.color = color
+            paint.textSize *= 0.88f
+        }
+
+        override fun updateMeasureState(paint: TextPaint) {
+            paint.textSize *= 0.88f
+        }
+    }
+
+    fun styleComment(text: Spannable, start: Int, end: Int, dark: Boolean) {
+        text.setSpan(CommentTextSpan(if (dark) 0xffa4afa1.toInt() else 0xff777e77.toInt()),
+            start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+    }
+
     fun empty(): String = JSONObject().put("version", 1).put("text", "").put("spans", JSONArray()).toString()
 
     fun plain(body: String): String = JSONObject(body).optString("text")
@@ -86,6 +104,7 @@ object RichTextCodec {
                 else -> null
             }
             if (span != null) result.setSpan(span, start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            if (entry.getString("type") == "quote") styleComment(result, start, end, dark)
         }
         return result
     }

@@ -28,6 +28,7 @@ export class NativeStore {
   notes: NativeNote[] = [];
   privateNotes: NativeNote[] = [];
   dark: boolean = false;
+  listLayout: boolean = false;
   private pending: Promise<void> = Promise.resolve();
 
   private constructor(security: DeviceSecurity) {
@@ -42,6 +43,7 @@ export class NativeStore {
       store.groups = data.groups;
       store.notes = data.notes;
       store.dark = data.dark ?? false;
+      store.listLayout = data.listLayout ?? false;
     }
     return store;
   }
@@ -60,7 +62,7 @@ export class NativeStore {
   }
 
   saveNormal(): Promise<void> {
-    const value = JSON.stringify({ groups: this.groups, notes: this.notes, dark: this.dark });
+    const value = JSON.stringify({ groups: this.groups, notes: this.notes, dark: this.dark, listLayout: this.listLayout });
     this.pending = this.pending.then((): Promise<void> => this.security.setSecret('native-workspace-v1', value));
     return this.pending;
   }
@@ -85,6 +87,7 @@ interface WorkspaceData {
   groups: NoteGroup[];
   notes: NativeNote[];
   dark?: boolean;
+  listLayout?: boolean;
 }
 
 export function newId(): string {

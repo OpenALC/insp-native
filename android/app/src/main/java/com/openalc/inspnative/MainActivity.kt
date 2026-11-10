@@ -6,6 +6,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.provider.OpenableColumns
 import android.graphics.BitmapFactory
@@ -13,6 +14,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.Drawable
 import android.hardware.biometrics.BiometricManager
 import android.hardware.biometrics.BiometricPrompt
 import android.os.Bundle
@@ -54,12 +56,15 @@ import android.widget.TextView
 import android.widget.Toast
 import android.view.inputmethod.InputMethodManager
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
+import androidx.activity.OnBackPressedCallback
 import androidx.core.content.FileProvider
 import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.StaggeredGridLayoutManager
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.transition.MaterialContainerTransform
 import androidx.transition.TransitionManager
 import org.json.JSONObject
@@ -110,6 +115,7 @@ class MainActivity : AppCompatActivity() {
     private var privateArea = false
     private var privateGeneration = 0
     private var search = ""
+    private var listLayout = false
     private var allNotes = listOf<NativeNote>()
     private var allGroups = listOf<NoteGroup>()
     private val green = 0xff54d81b.toInt()
@@ -122,7 +128,10 @@ class MainActivity : AppCompatActivity() {
     private val secondary by lazy { if (dark) 0xff9fa79b.toInt() else 0xff616860.toInt() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val preferences = getSharedPreferences("appearance", Context.MODE_PRIVATE)
+        AppCompatDelegate.setDefaultNightMode(preferences.getInt("theme", AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM))
         super.onCreate(savedInstanceState)
+        listLayout = preferences.getBoolean("list_layout", false)
         store = NativeStore(this)
         window.setDecorFitsSystemWindows(false)
         window.statusBarColor = Color.TRANSPARENT
@@ -152,12 +161,30 @@ class MainActivity : AppCompatActivity() {
         }
         root.setOnApplyWindowInsetsListener { _, insets ->
             val bars = insets.getInsets(WindowInsets.Type.systemBars())
+            val ime = insets.getInsets(WindowInsets.Type.ime())
             home.setPadding(0, bars.top, 0, bars.bottom)
-            editor.setPadding(0, bars.top, 0, bars.bottom)
+            editor.setPadding(0, bars.top, 0, maxOf(bars.bottom, ime.bottom))
             tabletSidebar?.setPadding(0, bars.top, 0, bars.bottom)
             insets
         }
         setContentView(root)
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                val insets = root.rootWindowInsets
+                if ((insets?.getInsets(WindowInsets.Type.ime())?.bottom ?: 0) >
+                    (insets?.getInsets(WindowInsets.Type.systemBars())?.bottom ?: 0) + dp(40)) {
+                    window.insetsController?.hide(WindowInsets.Type.ime())
+                    return
+                }
+                when {
+                    settingsOverlay != null -> closeSettings()
+                    drawerOverlay != null -> closeDrawer()
+                    editor.visibility == View.VISIBLE -> closeEditor()
+                    privateArea -> leavePrivate()
+                    else -> { isEnabled = false; onBackPressedDispatcher.onBackPressed() }
+                }
+            }
+        })
         val appearance = if (dark) 0 else android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
             android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
         window.insetsController?.setSystemBarsAppearance(appearance,
@@ -189,7 +216,7 @@ class MainActivity : AppCompatActivity() {
         filterScroll.addView(filters)
         page.addView(filterScroll, LinearLayout.LayoutParams(-1, dp(52)))
         cards = RecyclerView(this).apply {
-            layoutManager = StaggeredGridLayoutManager(if (tablet) 1 else 2, StaggeredGridLayoutManager.VERTICAL)
+            layoutManager = StaggeredGridLayoutManager(if (tablet || listLayout) 1 else 2, StaggeredGridLayoutManager.VERTICAL)
             clipToPadding = false
             setPadding(dp(14), dp(16), dp(14), dp(18))
             addOnItemTouchListener(object : RecyclerView.SimpleOnItemTouchListener() {
@@ -221,13 +248,19 @@ class MainActivity : AppCompatActivity() {
         cardAdapter = Cards()
         cards.adapter = cardAdapter
         page.addView(cards, LinearLayout.LayoutParams(-1, 0, 1f))
-        composeBar = LinearLayout(this).apply { gravity = Gravity.END; setPadding(dp(10), dp(8), dp(10), dp(10)) }
-        val expanded = minOf(dp(if (tablet) 130 else 180), (resources.displayMetrics.widthPixels - dp(28)) / 2)
+        composeBar = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            background = rounded(paper, 36)
+            elevation = dp(8).toFloat()
+        }
+        val expanded = dp(if (tablet) 105 else 145)
         composeNoteButton = pill("＋  笔记") { create("richtext") }
         composeMindButton = pill("⌘  灵感笔记") { create("mindmap") }
-        composeBar.addView(composeNoteButton, LinearLayout.LayoutParams(expanded, dp(54)))
-        composeBar.addView(composeMindButton, LinearLayout.LayoutParams(expanded, dp(54)).apply { leftMargin = dp(8) })
-        page.addView(composeBar)
+        composeBar.addView(composeNoteButton, LinearLayout.LayoutParams(expanded, dp(48)))
+        composeBar.addView(View(this).apply { setBackgroundColor(secondary) }, LinearLayout.LayoutParams(dp(1), dp(22)).apply { leftMargin = dp(5); rightMargin = dp(5) })
+        composeBar.addView(composeMindButton, LinearLayout.LayoutParams(expanded, dp(48)))
+        page.addView(composeBar, LinearLayout.LayoutParams(-2, dp(60)).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(18) })
         selectionBar = LinearLayout(this).apply { gravity = Gravity.CENTER; setPadding(dp(10), dp(8), dp(10), dp(10)); visibility = View.GONE }
         selectionBar.addView(pill("移动到") { moveSelected() }, LinearLayout.LayoutParams(0, dp(54), 1f))
         selectionBar.addView(pill("删除") { deleteSelected() }, LinearLayout.LayoutParams(0, dp(54), 1f).apply { leftMargin = dp(8) })
@@ -266,7 +299,7 @@ class MainActivity : AppCompatActivity() {
         composeCompact = compact
         composeAnimator?.cancel()
         val start = composeNoteButton.layoutParams.width
-        val end = if (compact) dp(54) else minOf(dp(if (tablet) 130 else 180), (resources.displayMetrics.widthPixels - dp(28)) / 2)
+        val end = dp(if (compact) 48 else if (tablet) 105 else 145)
         if (compact) { composeNoteButton.text = "＋"; composeMindButton.text = "⌘" }
         composeAnimator = ValueAnimator.ofInt(start, end).apply {
             duration = if (compact) 170 else 280
@@ -368,12 +401,34 @@ class MainActivity : AppCompatActivity() {
         active = note
         selectedCard = card
         if (note.kind == "richtext") {
-            io.execute {
-                val document = RichTextCodec.decode(note.body, dark) { id -> imageDrawable(note, id) }
-                runOnUiThread { if (generation == privateGeneration) showEditor(note, document, card) }
+            val document = RichTextCodec.decode(note.body, dark) { id -> thumbnails.get(id) ?: imagePlaceholder() }
+            showEditor(note, document, card)
+            val imageIds = JSONObject(note.body).optJSONArray("spans")?.let { spans ->
+                (0 until spans.length()).mapNotNull { index ->
+                    spans.getJSONObject(index).takeIf { it.optString("type") == "image" }?.optString("attachmentId")
+                }.distinct()
+            }.orEmpty()
+            if (imageIds.isNotEmpty()) io.execute {
+                if (generation != privateGeneration) return@execute
+                val images = imageIds.map { it to imageDrawable(note, it) }
+                runOnUiThread {
+                    if (generation != privateGeneration || active?.id != note.id) return@runOnUiThread
+                    val text = bodyInput?.text ?: return@runOnUiThread
+                    for ((id, drawable) in images) {
+                        for (span in text.getSpans(0, text.length, ImageSpan::class.java).filter { it.source == id }) {
+                            val start = text.getSpanStart(span)
+                            val end = text.getSpanEnd(span)
+                            text.removeSpan(span)
+                            text.setSpan(ImageSpan(drawable, id), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                        }
+                    }
+                }
             }
         } else showEditor(note, null, card)
     }
+
+    private fun imagePlaceholder(): Drawable = rounded(if (dark) 0xff30342e.toInt() else 0xffebeeea.toInt(), 12)
+        .apply { setBounds(0, 0, dp(240), dp(120)) }
 
     private fun showEditor(note: NativeNote, document: Spannable?, card: View?) {
         undoHistory.clear(); redoHistory.clear(); editBurst = false
@@ -397,8 +452,15 @@ class MainActivity : AppCompatActivity() {
             persistNow()
         }.apply { textSize = 15f }, LinearLayout.LayoutParams(dp(50), dp(48)))
         if (note.kind == "mindmap") {
-            lateinit var toggle: TextView
-            toggle = action("◇") { toggle.text = if (mindPanel?.toggleMode() == true) "☷" else "◇" }
+            val toggle = ImageView(this).apply {
+                setImageResource(R.drawable.ic_mind_tree)
+                setColorFilter(ink)
+                setPadding(dp(12), dp(12), dp(12), dp(12))
+                setOnClickListener {
+                    setImageResource(if (mindPanel?.toggleMode() == true) R.drawable.ic_mind_list else R.drawable.ic_mind_tree)
+                    setColorFilter(ink)
+                }
+            }
             top.addView(toggle, LinearLayout.LayoutParams(dp(48), dp(48)))
         }
         top.addView(action("⋯") { noteOptions(note) }, LinearLayout.LayoutParams(dp(48), dp(48)))
@@ -458,6 +520,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun closeEditor() {
+        window.insetsController?.hide(WindowInsets.Type.ime())
+        bodyInput?.clearFocus()
+        editor.requestFocus()
         persistNow()
         val card = selectedCard
         if (card != null && card.parent != null && !tablet) {
@@ -565,7 +630,7 @@ class MainActivity : AppCompatActivity() {
         }
         captureUndo(input)
         input.text.setSpan(span, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        if (command == "quote") input.text.setSpan(StyleSpan(Typeface.ITALIC), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        if (command == "quote") RichTextCodec.styleComment(input.text, start, end, dark)
         if (command == "heading") input.text.setSpan(StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         scheduleSave(); settleHistory()
     }
@@ -720,7 +785,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun noteOptions(note: NativeNote) {
         val items = arrayOf("分享与导出", "复制纯文本", "移动到分组", if (note.private) "移出隐私笔记" else "移入隐私笔记", "删除笔记")
-        MaterialAlertDialogBuilder(this).setItems(items) { _, index -> when (index) {
+        showSheet("笔记选项", items) { index -> when (index) {
             0 -> shareOptions(note)
             1 -> {
                 (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText(note.title, contentText(note)))
@@ -736,14 +801,14 @@ class MainActivity : AppCompatActivity() {
             }
             4 -> MaterialAlertDialogBuilder(this).setTitle("删除这篇笔记？").setNegativeButton("取消", null)
                 .setPositiveButton("删除") { _, _ -> io.execute { store.delete(note.id); runOnUiThread { closeEditor() } } }.show()
-        } }.show()
+        } }
     }
 
     private fun contentText(note: NativeNote) = NativeExport.plain(note)
 
     private fun shareOptions(note: NativeNote) {
         val options = arrayOf("以纯文本分享", "以图片分享", "导出 Markdown", "导出 Word", "导出 PDF")
-        MaterialAlertDialogBuilder(this).setTitle("分享与导出").setItems(options) { _, index ->
+        showSheet("分享与导出", options) { index ->
             when (index) {
                 0 -> { persistNow(); share(note) }
                 1 -> exportNote(note, "png")
@@ -751,7 +816,7 @@ class MainActivity : AppCompatActivity() {
                 3 -> exportNote(note, "docx")
                 4 -> exportNote(note, "pdf")
             }
-        }.show()
+        }
     }
 
     private fun exportNote(note: NativeNote, format: String) {
@@ -800,19 +865,47 @@ class MainActivity : AppCompatActivity() {
 
     private fun groupPicker(note: NativeNote) {
         val names = listOf("未分组") + allGroups.map { it.name }
-        MaterialAlertDialogBuilder(this).setTitle("移动到").setItems(names.toTypedArray()) { _, index ->
+        showSheet("移动到", names.toTypedArray()) { index ->
             note.groupId = if (index == 0) null else allGroups[index - 1].id
             io.execute { store.save(note.copy()); runOnUiThread { refresh() } }
-        }.show()
+        }
     }
 
     private fun listOptions() {
-        MaterialAlertDialogBuilder(this).setItems(arrayOf("新建分组", "进入隐私笔记", "导入笔记", "关于拾页 Native")) { _, index -> when (index) {
+        showSheet("笔记操作", arrayOf("新建分组", "进入隐私笔记", "导入笔记", "关于拾页 Native")) { index -> when (index) {
             0 -> groupDialog()
             1 -> enterPrivate()
             2 -> pickTransfer()
             3 -> MaterialAlertDialogBuilder(this).setTitle("拾页 Native").setMessage("OpenALC · MIT License\nAndroid 原生单机版 0.1.0").setPositiveButton("完成", null).show()
-        } }.show()
+        } }
+    }
+
+    fun showSheet(title: String, items: Array<String>, selected: (Int) -> Unit) {
+        window.insetsController?.hide(WindowInsets.Type.ime())
+        val sheet = BottomSheetDialog(this)
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(12), dp(18), dp(24))
+            background = rounded(paper, 28)
+        }
+        content.addView(TextView(this).apply {
+            text = title; textSize = 23f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink)
+            setPadding(dp(12), dp(12), dp(12), dp(14))
+        })
+        items.forEachIndexed { index, label ->
+            content.addView(TextView(this).apply {
+                text = label; textSize = 16f; setTextColor(if (label.startsWith("删除")) 0xffbb4848.toInt() else ink)
+                gravity = Gravity.CENTER_VERTICAL; setPadding(dp(18), 0, dp(18), 0)
+                background = rounded(if (dark) 0xff30342e.toInt() else 0xfff4f6f2.toInt(), 16)
+                setOnClickListener { sheet.dismiss(); selected(index) }
+            }, LinearLayout.LayoutParams(-1, dp(54)).apply { bottomMargin = dp(8) })
+        }
+        content.addView(TextView(this).apply {
+            text = "取消"; textSize = 16f; setTextColor(secondary); gravity = Gravity.CENTER
+            setOnClickListener { sheet.dismiss() }
+        }, LinearLayout.LayoutParams(-1, dp(48)))
+        sheet.setContentView(content)
+        sheet.show()
     }
 
     private fun pickTransfer() {
@@ -858,7 +951,7 @@ class MainActivity : AppCompatActivity() {
         }
         overlay.addView(panel, FrameLayout.LayoutParams(width, -1, Gravity.START))
         panel.addView(TextView(this).apply {
-            text = "拾页 · Inspiration"; textSize = 20f; typeface = Typeface.DEFAULT_BOLD
+            text = "拾页 · Native"; textSize = 20f; typeface = Typeface.DEFAULT_BOLD
             setTextColor(ink); gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(12), dp(16), 0, 0)
         }, LinearLayout.LayoutParams(-1, dp(58)))
@@ -904,7 +997,7 @@ class MainActivity : AppCompatActivity() {
         val sidebar = tabletSidebar ?: return
         sidebar.removeAllViews()
         sidebar.addView(TextView(this).apply {
-            text = "拾页 · Inspiration\nby OpenALC"; textSize = 17f; setTextColor(ink)
+            text = "拾页 · Native\nby OpenALC"; textSize = 17f; setTextColor(ink)
             setPadding(dp(22), dp(25), dp(12), dp(26))
         })
         val scroll = ScrollView(this)
@@ -972,6 +1065,14 @@ class MainActivity : AppCompatActivity() {
             text = "设置"; textSize = 22f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink)
         })
         page.addView(header)
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 0, 0, dp(24))
+        }
+        page.addView(ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            addView(content)
+        }, LinearLayout.LayoutParams(-1, 0, 1f))
         fun row(title: String, detail: String, click: (() -> Unit)? = null) {
             val item = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL
@@ -980,13 +1081,48 @@ class MainActivity : AppCompatActivity() {
             item.addView(TextView(this).apply { text = title; textSize = 16f; setTextColor(ink) })
             item.addView(TextView(this).apply { text = detail; textSize = 12f; setTextColor(secondary) })
             click?.let { item.setOnClickListener { it() } }
-            page.addView(item, LinearLayout.LayoutParams(-1, dp(70)).apply { topMargin = dp(10) })
+            content.addView(item, LinearLayout.LayoutParams(-1, dp(70)).apply { topMargin = dp(10) })
         }
+        fun section(title: String) {
+            content.addView(TextView(this).apply {
+                text = title; textSize = 14f; typeface = Typeface.DEFAULT_BOLD; setTextColor(secondary)
+                setPadding(dp(8), dp(18), 0, 0)
+            }, LinearLayout.LayoutParams(-1, dp(44)))
+        }
+        section("外观")
+        val currentTheme = getSharedPreferences("appearance", Context.MODE_PRIVATE).getInt("theme", AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM)
+        row("主题", when (currentTheme) {
+            AppCompatDelegate.MODE_NIGHT_YES -> "深色"
+            AppCompatDelegate.MODE_NIGHT_NO -> "浅色"
+            else -> "跟随系统"
+        }) {
+            showSheet("主题", arrayOf("跟随系统", "浅色", "深色")) { choice ->
+                val mode = when (choice) {
+                    1 -> AppCompatDelegate.MODE_NIGHT_NO
+                    2 -> AppCompatDelegate.MODE_NIGHT_YES
+                    else -> AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
+                }
+                getSharedPreferences("appearance", Context.MODE_PRIVATE).edit().putInt("theme", mode).apply()
+                AppCompatDelegate.setDefaultNightMode(mode)
+                closeSettings(); openSettings()
+            }
+        }
+        row("笔记布局", if (listLayout) "列表" else "宫格") {
+            showSheet("笔记布局", arrayOf("宫格", "列表")) { choice ->
+                listLayout = choice == 1
+                getSharedPreferences("appearance", Context.MODE_PRIVATE).edit().putBoolean("list_layout", listLayout).apply()
+                cards.layoutManager = StaggeredGridLayoutManager(if (tablet || listLayout) 1 else 2, StaggeredGridLayoutManager.VERTICAL)
+                closeSettings(); openSettings()
+            }
+        }
+        section("安全与隐私")
         row("普通笔记", "直接打开 · 本地加密")
         row("隐私笔记", "系统锁屏密码或生物识别") { closeSettings(); enterPrivate() }
+        section("数据")
         row("导入笔记", "拾页迁移 ZIP、Markdown、纯文本、小米笔记副本") { pickTransfer() }
+        section("其他")
         row("关于拾页 Native", "Android 原生单机版 · OpenALC · MIT") {
-            MaterialAlertDialogBuilder(this).setTitle("拾页 · Inspiration")
+            MaterialAlertDialogBuilder(this).setTitle("拾页 · Native")
                 .setMessage("Android 原生单机版 0.1.0\nGitHub: github.com/OpenALC/insp\nMIT License")
                 .setPositiveButton("完成", null).show()
         }
@@ -1048,17 +1184,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    @Deprecated("Activity back callback")
-    override fun onBackPressed() {
-        when {
-            settingsOverlay != null -> closeSettings()
-            drawerOverlay != null -> closeDrawer()
-            editor.visibility == View.VISIBLE -> closeEditor()
-            privateArea -> leavePrivate()
-            else -> super.onBackPressed()
-        }
-    }
-
     private inner class Cards : RecyclerView.Adapter<Cards.Holder>() {
         private var notes = listOf<NativeNote>()
 
@@ -1092,6 +1217,7 @@ class MainActivity : AppCompatActivity() {
             val card = MaterialCardView(this@MainActivity).apply {
                 radius = dp(19).toFloat(); cardElevation = 0f; setCardBackgroundColor(paper)
                 strokeWidth = 0; useCompatPadding = false
+                rippleColor = ColorStateList.valueOf(Color.TRANSPARENT)
             }
             val content = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.VERTICAL; setPadding(dp(18), dp(17), dp(18), dp(17))

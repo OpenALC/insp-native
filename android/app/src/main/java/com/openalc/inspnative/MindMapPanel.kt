@@ -165,7 +165,7 @@ class MindMapPanel(
 
     private fun actions(node: MindNode, parent: MindNode) {
         val options = arrayOf("上移", "下移", "增加层级", "减少层级", "删除分支")
-        MaterialAlertDialogBuilder(context).setItems(options) { _, choice ->
+        (context as MainActivity).showSheet("分支操作", options) { choice ->
             val index = parent.children.indexOf(node)
             when (choice) {
                 0 -> if (index > 0) { parent.children.removeAt(index); parent.children.add(index - 1, node) }
@@ -178,7 +178,7 @@ class MindMapPanel(
                 4 -> parent.children.remove(node)
             }
             update(if (choice == 4) null else node.id)
-        }.show()
+        }
     }
 
     private fun findParent(current: MindNode, child: MindNode): MindNode? {
