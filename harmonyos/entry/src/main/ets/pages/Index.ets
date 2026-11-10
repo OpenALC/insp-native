@@ -59,6 +59,7 @@ struct Index {
   private async syncSystemBars(): Promise<void> {
     const context = getContext(this) as common.UIAbilityContext;
     const current = await window.getLastWindow(context);
+    current.setWindowBackgroundColor(this.dark ? '#171B16' : '#F5F7F2');
     await current.setWindowSystemBarProperties({
       statusBarColor: this.dark ? '#171B16' : '#F5F7F2',
       navigationBarColor: this.dark ? '#171B16' : '#F5F7F2',
@@ -317,6 +318,32 @@ struct Index {
     this.refresh();
   }
 
+  private async changePrivacy(): Promise<void> {
+    this.saveNow();
+    const note = this.activeNote();
+    const store = this.store;
+    if (note === null || store === null) return;
+    if (this.privateOpen) {
+      store.privateNotes = store.privateNotes.filter((item: NativeNote): boolean => item.id !== note.id);
+      note.private = false;
+      store.notes.unshift(note);
+      await store.saveNormal();
+      await store.savePrivate();
+    } else {
+      if (!await store.unlockPrivate()) return;
+      store.notes = store.notes.filter((item: NativeNote): boolean => item.id !== note.id);
+      note.private = true;
+      store.privateNotes.unshift(note);
+      await store.savePrivate();
+      await store.saveNormal();
+      store.lockPrivate();
+    }
+    this.activeId = '';
+    this.rows = [];
+    this.noteOptions = false;
+    this.refresh();
+  }
+
   private async importTextFile(): Promise<void> {
     if (this.store === null) return;
     const context = getContext(this) as common.UIAbilityContext;
@@ -487,6 +514,9 @@ struct Index {
       if (this.addingGroup) {
         Row() {
           TextInput({ placeholder: '分组名称', text: this.groupName })
+            .fontColor(this.dark ? '#D8DED4' : '#141914')
+            .placeholderColor(this.dark ? '#A4AFA1' : '#677166')
+            .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
             .onChange((value: string): void => { this.groupName = value; })
             .layoutWeight(1)
           Button('确定').fontColor('#141914').backgroundColor('#54D81B').borderRadius(14)
@@ -531,6 +561,9 @@ struct Index {
         Text(this.visibleNotes().length.toString()).fontSize(15).fontColor(this.dark ? '#A4AFA1' : '#677166')
       }.width('100%').padding({ left: 18, right: 18, top: 18, bottom: 12 })
       TextInput({ placeholder: '搜索笔记', text: this.search })
+        .fontColor(this.dark ? '#D8DED4' : '#141914')
+        .placeholderColor(this.dark ? '#A4AFA1' : '#677166')
+        .backgroundColor(this.dark ? '#252B24' : '#E9EDE7')
         .onChange((value: string): void => { this.search = value; })
         .margin({ left: 16, right: 16, bottom: 12 })
       List({ space: 10 }) {
@@ -590,17 +623,23 @@ struct Index {
           .onClick((): void => { this.noteOptions = !this.noteOptions; })
       }.width('100%').padding(12)
       if (this.noteOptions) {
-        Row({ space: 8 }) {
-          Button('移动分组').fontColor(this.dark ? '#D8DED4' : '#141914')
-            .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
-            .onClick((): void => { this.movingGroup = !this.movingGroup; })
-          Button('删除笔记').fontColor(this.dark ? '#D8DED4' : '#141914')
-            .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
-            .onClick((): void => this.deleteCurrent())
-          Button('导出纯文本').fontColor(this.dark ? '#D8DED4' : '#141914')
-            .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
-            .onClick((): void => { this.exportTextFile(); })
-        }.width('100%').padding({ left: 18, right: 18, bottom: 10 })
+        Scroll() {
+          Row({ space: 8 }) {
+            Button('移动分组').fontColor(this.dark ? '#D8DED4' : '#141914')
+              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+              .onClick((): void => { this.movingGroup = !this.movingGroup; })
+            Button('删除笔记').fontColor(this.dark ? '#D8DED4' : '#141914')
+              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+              .onClick((): void => this.deleteCurrent())
+            Button('导出纯文本').fontColor(this.dark ? '#D8DED4' : '#141914')
+              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+              .onClick((): void => { this.exportTextFile(); })
+            Button(this.privateOpen ? '移出隐私笔记' : '移入隐私笔记')
+              .fontColor(this.dark ? '#D8DED4' : '#141914')
+              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+              .onClick((): void => { this.changePrivacy(); })
+          }
+        }.scrollable(ScrollDirection.Horizontal).width('100%').padding({ left: 18, right: 18, bottom: 10 })
         if (this.movingGroup) {
           Scroll() {
             Row({ space: 8 }) {
