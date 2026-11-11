@@ -1136,7 +1136,8 @@ struct Index {
             Text('拾页 · Native\n给想法，留一页空白。\nOpenALC · MIT').fontSize(15).lineHeight(25)
               .fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%').padding(18)
           }
-        }.width('100%').padding({ bottom: 24 })
+        }.width('100%').constraintSize({ minHeight: '100%' })
+          .justifyContent(FlexAlign.Start).padding({ bottom: 24 })
       }.layoutWeight(1).width(this.tablet ? 700 : '100%').alignSelf(ItemAlign.Center)
     }.padding(24).layoutWeight(1).height('100%').backgroundColor(this.dark ? '#171B16' : '#F5F7F2')
   }
