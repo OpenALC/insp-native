@@ -907,28 +907,35 @@ struct Index {
       WaterFlow({ scroller: this.listScroller }) {
         ForEach(this.visibleNotes(), (note: NativeNote) => {
           FlowItem() {
-            Column({ space: 10 }) {
-              Row() {
-                Text(note.title).fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.dark ? '#D8DED4' : '#141914')
-                  .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
-                if (this.selectionMode) {
-                  Text(this.selectedIds.includes(note.id) ? '✓' : '○').fontSize(21)
-                    .fontColor(this.selectedIds.includes(note.id) ? '#54D81B' : (this.dark ? '#A4AFA1' : '#677166'))
-                }
-              }.width('100%')
-              Text(this.preview(note) || '空白笔记').fontSize(13).fontColor(this.dark ? '#A4AFA1' : '#677166').maxLines(4)
-                .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
-              Row() {
-                Text(note.kind === 'mindmap' ? '灵感笔记' : '笔记').fontSize(11)
-                  .fontColor(this.dark ? '#A4AFA1' : '#677166').layoutWeight(1)
+            Row({ space: 10 }) {
+              Column() {
+                Image(note.kind === 'mindmap' ? (this.dark ? $r('app.media.mind_tree_dark') : $r('app.media.mind_tree'))
+                  : (this.dark ? $r('app.media.nav_note_dark') : $r('app.media.nav_note')))
+                  .width(23).height(23)
+              }.width(38).height(38).borderRadius(11)
+                .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
+                .backgroundColor(this.dark ? '#34562C' : '#E7F5E0')
+              Column({ space: 6 }) {
+                Text(note.title).fontSize(17).fontWeight(FontWeight.Medium)
+                  .fontColor(this.dark ? '#D8DED4' : '#141914')
+                  .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+                Text(this.preview(note) || '还没有正文，点开继续记录。')
+                  .fontSize(13).fontColor(this.dark ? '#A4AFA1' : '#677166').maxLines(3)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
                 Text(new Date(note.updatedAt).toLocaleDateString()).fontSize(11)
-                  .fontColor(this.dark ? '#A4AFA1' : '#677166')
-              }.width('100%').padding({ top: 3 })
-            }
-            .padding(17).width('100%')
+                  .fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%')
+              }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+              if (this.selectionMode) {
+                Text(this.selectedIds.includes(note.id) ? '✓' : '○').fontSize(21)
+                  .fontColor(this.selectedIds.includes(note.id) ? '#54D81B' : (this.dark ? '#A4AFA1' : '#677166'))
+              } else if (this.tablet) {
+                Text('›').fontSize(22).fontColor(this.dark ? '#A4AFA1' : '#677166')
+              }
+            }.padding(16).width('100%').alignItems(VerticalAlign.Top)
             .backgroundColor(this.selectedIds.includes(note.id) || this.activeId === note.id
               ? (this.dark ? '#34562C' : '#EAF8E4') : (this.dark ? '#252B24' : '#FFFFFF'))
             .borderRadius(20)
+            .border({ width: 1, color: this.activeId === note.id ? '#A7DB9A' : '#00000000' })
             .onClick((): void => {
               if (this.suppressSelectionClick === note.id) { this.suppressSelectionClick = ''; return; }
               if (this.selectionMode) this.toggleSelection(note.id);
