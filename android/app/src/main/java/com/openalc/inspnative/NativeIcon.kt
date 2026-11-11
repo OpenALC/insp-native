@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.Typeface
 import android.view.View
 
 class NativeIcon(context: Context, private val name: String, color: Int) : View(context) {
@@ -54,6 +55,17 @@ class NativeIcon(context: Context, private val name: String, color: Int) : View(
             "download" -> { line(12f, 3f, 12f, 16f); line(7f, 11f, 12f, 16f, 17f, 11f); line(4f, 18f, 4f, 21f, 20f, 21f, 20f, 18f) }
             "info" -> { circle(12f, 12f, 9f); circle(12f, 7f, .7f); line(12f, 11f, 12f, 17f) }
             "share" -> { circle(6f, 12f, 2f); circle(18f, 5f, 2f); circle(18f, 19f, 2f); line(8f, 11f, 16f, 6f); line(8f, 13f, 16f, 18f) }
+            "strike" -> {
+                canvas.drawText("S", 7f, 19f, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = pen.color; textSize = 19f; typeface = Typeface.DEFAULT_BOLD; style = Paint.Style.FILL
+                })
+                line(3f, 12f, 21f, 12f)
+            }
+            "link" -> {
+                canvas.drawArc(2f, 7f, 14f, 19f, 40f, 260f, false, pen)
+                canvas.drawArc(10f, 5f, 22f, 17f, 220f, 260f, false, pen)
+                line(8f, 14f, 16f, 10f)
+            }
             "trash" -> { rect(6f, 7f, 18f, 21f); line(4f, 6f, 20f, 6f); line(9f, 3f, 15f, 3f); line(10f, 11f, 10f, 17f); line(14f, 11f, 14f, 17f) }
             "image" -> { rect(3f, 3f, 21f, 21f); circle(8f, 8f, 1.5f); line(5f, 18f, 10f, 13f, 13f, 16f, 16f, 12f, 20f, 17f) }
             "document" -> { line(5f, 2f, 15f, 2f, 20f, 7f, 20f, 22f, 5f, 22f, 5f, 2f); line(15f, 2f, 15f, 7f, 20f, 7f); line(8f, 12f, 17f, 12f); line(8f, 16f, 17f, 16f) }

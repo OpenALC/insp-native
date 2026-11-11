@@ -104,10 +104,18 @@ class MainActivity : AppCompatActivity() {
     private var selectionMode = false
     private var drawerOverlay: FrameLayout? = null
     private var settingsOverlay: LinearLayout? = null
+    private var settingsParent: LinearLayout? = null
     private var aboutOpen = false
     private var selectedCard: View? = null
     private var active: NativeNote? = null
     private var bodyInput: EditText? = null
+    private var titleInput: EditText? = null
+    private var formatToolbar: View? = null
+    private var doneButton: View? = null
+    private var editingMode = false
+    private val pendingStyles = mutableSetOf<String>()
+    private val suppressedStyles = mutableSetOf<String>()
+    private var pendingParagraph: String? = null
     private var mindPanel: MindMapPanel? = null
     private var saveTask: Runnable? = null
     private val undoHistory = ArrayDeque<SpannableStringBuilder>()
@@ -187,9 +195,10 @@ class MainActivity : AppCompatActivity() {
                     settingsOverlay != null -> closeSettings()
                     drawerOverlay != null -> closeDrawer()
                     selectionMode -> clearSelection()
+                    editor.visibility == View.VISIBLE && editingMode -> exitEditing()
                     editor.visibility == View.VISIBLE -> closeEditor()
                     privateArea -> leavePrivate()
-                    else -> finish()
+                    else -> finishAffinity()
                 }
             }
         })
@@ -439,17 +448,17 @@ class MainActivity : AppCompatActivity() {
     private fun create(kind: String) {
         io.execute {
             val note = store.create(kind, groupId?.takeIf { it.isNotEmpty() }, privateArea)
-            runOnUiThread { allNotes = listOf(note) + allNotes; searchInput.setText(""); renderCards(); cards.scrollToPosition(0); openNote(note, null) }
+            runOnUiThread { allNotes = listOf(note) + allNotes; searchInput.setText(""); renderCards(); cards.scrollToPosition(0); openNote(note, null, true) }
         }
     }
 
-    private fun openNote(note: NativeNote, card: View?) {
+    private fun openNote(note: NativeNote, card: View?, startEditing: Boolean = false) {
         val generation = privateGeneration
-        active = note
+        active = note.copy()
         selectedCard = card
         if (note.kind == "richtext") {
             val document = RichTextCodec.decode(note.body, dark) { id -> thumbnails.get(id) ?: imagePlaceholder() }
-            showEditor(note, document, card)
+            showEditor(active!!, document, card, startEditing)
             val imageIds = JSONObject(note.body).optJSONArray("spans")?.let { spans ->
                 (0 until spans.length()).mapNotNull { index ->
                     spans.getJSONObject(index).takeIf { it.optString("type") == "image" }?.optString("attachmentId")
@@ -471,33 +480,39 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
-        } else showEditor(note, null, card)
+        } else showEditor(active!!, null, card, startEditing)
     }
 
     private fun imagePlaceholder(): Drawable = rounded(if (dark) 0xff30342e.toInt() else 0xffebeeea.toInt(), 12)
         .apply { setBounds(0, 0, dp(240), dp(120)) }
 
-    private fun showEditor(note: NativeNote, document: Spannable?, card: View?) {
+    private fun showEditor(note: NativeNote, document: Spannable?, card: View?, startEditing: Boolean) {
         undoHistory.clear(); redoHistory.clear(); editBurst = false
+        editingMode = false; pendingStyles.clear(); suppressedStyles.clear(); pendingParagraph = null
         editor.removeAllViews()
         val top = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(10), dp(8), dp(10), dp(8)) }
         top.addView(action("‹") { closeEditor() }, LinearLayout.LayoutParams(dp(48), dp(48)))
         val title = EditText(this).apply {
             setSingleLine(true); textSize = 18f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink)
             background = null; setText(note.title); clearFocus()
+            isFocusableInTouchMode = false; isCursorVisible = false
+            setOnTouchListener { view, event ->
+                if (!editingMode && event.actionMasked == MotionEvent.ACTION_UP) {
+                    val field = view as EditText
+                    enterEditing(field, field.getOffsetForPosition(event.x, event.y))
+                    true
+                } else false
+            }
             addTextChangedListener(watcher {
                 note.title = it.ifBlank { if (note.kind == "mindmap") "未命名的灵感笔记" else "未命名笔记" }
                 mindPanel?.renameRoot(note.title)
                 scheduleSave()
             })
         }
+        titleInput = title
         top.addView(title, LinearLayout.LayoutParams(0, dp(50), 1f))
-        top.addView(action("完成") {
-            (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
-                .hideSoftInputFromWindow(editor.windowToken, 0)
-            editor.requestFocus()
-            persistNow()
-        }.apply { textSize = 15f }, LinearLayout.LayoutParams(dp(50), dp(48)))
+        doneButton = iconButton("check") { exitEditing() }.apply { visibility = View.GONE }
+        top.addView(doneButton, LinearLayout.LayoutParams(dp(48), dp(48)))
         if (note.kind == "mindmap") {
             val toggle = ImageView(this).apply {
                 setImageResource(R.drawable.ic_mind_tree)
@@ -519,12 +534,35 @@ class MainActivity : AppCompatActivity() {
                 setPadding(dp(24), dp(22), dp(24), dp(24))
                 setText(document ?: RichTextCodec.decode(note.body, dark))
                 clearFocus()
+                isFocusableInTouchMode = false
+                isCursorVisible = false
                 addTextChangedListener(object : TextWatcher {
                     override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {
                         if (!restoringHistory) captureUndo(this@apply)
                     }
                     override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                        if (!restoringHistory) { scheduleSave(); settleHistory() }
+                        if (!restoringHistory) {
+                            if (count > 0) pendingStyles.forEach { command ->
+                                val spans = this@apply.text.getSpans(start, start + count, Any::class.java)
+                                if (spans.none { matchesFormat(it, command) &&
+                                        this@apply.text.getSpanStart(it) <= start &&
+                                        this@apply.text.getSpanEnd(it) >= start + count }) {
+                                    this@apply.text.setSpan(newFormatSpan(command), start, start + count, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
+                                }
+                            }
+                            if (count > 0) suppressedStyles.forEach { command ->
+                                stripFormat(this@apply.text, start, start + count, command)
+                            }
+                            if (count > 0 && pendingParagraph != null) {
+                                val command = pendingParagraph!!
+                                val lineStart = if (start == 0) 0 else this@apply.text.lastIndexOf('\n', start - 1) + 1
+                                val lineEnd = this@apply.text.indexOf('\n', start + count).let { if (it < 0) this@apply.length() else it }
+                                this@apply.text.setSpan(newFormatSpan(command), lineStart, lineEnd, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
+                                if (command == "quote") RichTextCodec.styleComment(this@apply.text, lineStart, lineEnd, dark)
+                                pendingParagraph = null
+                            }
+                            scheduleSave(); settleHistory()
+                        }
                     }
                     override fun afterTextChanged(s: Editable?) = Unit
                 })
@@ -532,6 +570,7 @@ class MainActivity : AppCompatActivity() {
                     if (event.actionMasked == MotionEvent.ACTION_UP) {
                         val field = view as EditText
                         val offset = field.getOffsetForPosition(event.x, event.y)
+                        if (!editingMode) { enterEditing(field, offset); return@setOnTouchListener true }
                         val start = if (offset == 0) 0 else field.text.lastIndexOf('\n', offset - 1) + 1
                         if (offset <= start + 1 && start < field.length() && field.text[start] in "☐☑") {
                             field.text.replace(start, start + 1, if (field.text[start] == '☐') "☑" else "☐")
@@ -545,10 +584,13 @@ class MainActivity : AppCompatActivity() {
             bodyInput = input
             mindPanel = null
             editor.addView(input, LinearLayout.LayoutParams(-1, 0, 1f))
-            editor.addView(formatBar(), LinearLayout.LayoutParams(-1, dp(57)))
+            formatToolbar = formatBar().apply { visibility = View.GONE }
+            editor.addView(formatToolbar, LinearLayout.LayoutParams(-1, dp(57)))
         } else {
             bodyInput = null
-            mindPanel = MindMapPanel(this, note) { scheduleSave() }.also { editor.addView(it, LinearLayout.LayoutParams(-1, 0, 1f)) }
+            formatToolbar = null
+            mindPanel = MindMapPanel(this, note, { scheduleSave() }, { enterMindEditing() })
+                .also { editor.addView(it, LinearLayout.LayoutParams(-1, 0, 1f)) }
         }
         editor.isFocusableInTouchMode = true
         editor.requestFocus()
@@ -563,7 +605,53 @@ class MainActivity : AppCompatActivity() {
         }
         editor.visibility = View.VISIBLE
         tabletPlaceholder?.visibility = View.GONE
+        if (startEditing) {
+            if (note.kind == "richtext") inputForEditing() else editor.post { enterMindEditing() }
+        }
         if (tablet) { editor.alpha = 0f; editor.translationX = dp(18).toFloat(); editor.animate().alpha(1f).translationX(0f).setDuration(220).start() }
+    }
+
+    private fun inputForEditing() { bodyInput?.post { bodyInput?.let { enterEditing(it, it.length()) } } }
+
+    private fun enterEditing(input: EditText, offset: Int) {
+        if (editingMode) return
+        editingMode = true
+        doneButton?.visibility = View.VISIBLE
+        formatToolbar?.visibility = View.VISIBLE
+        titleInput?.isFocusableInTouchMode = true
+        titleInput?.isCursorVisible = true
+        bodyInput?.isFocusableInTouchMode = true
+        bodyInput?.isCursorVisible = true
+        input.isFocusableInTouchMode = true
+        input.isCursorVisible = true
+        input.requestFocus()
+        input.setSelection(offset.coerceIn(0, input.length()))
+        (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
+    }
+
+    private fun enterMindEditing() {
+        if (editingMode) return
+        editingMode = true
+        doneButton?.visibility = View.VISIBLE
+        mindPanel?.setEditing(true)
+    }
+
+    private fun exitEditing() {
+        if (!editingMode) return
+        (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(editor.windowToken, 0)
+        bodyInput?.clearFocus()
+        bodyInput?.isFocusableInTouchMode = false
+        bodyInput?.isCursorVisible = false
+        titleInput?.clearFocus()
+        titleInput?.isFocusableInTouchMode = false
+        titleInput?.isCursorVisible = false
+        mindPanel?.setEditing(false)
+        editor.requestFocus()
+        editingMode = false
+        doneButton?.visibility = View.GONE
+        formatToolbar?.visibility = View.GONE
+        pendingStyles.clear(); suppressedStyles.clear(); pendingParagraph = null
+        persistNow()
     }
 
     private fun closeEditor() {
@@ -571,6 +659,11 @@ class MainActivity : AppCompatActivity() {
         bodyInput?.clearFocus()
         editor.requestFocus()
         persistNow()
+        val finished = active?.copy()
+        if (finished != null) {
+            allNotes = allNotes.map { if (it.id == finished.id) finished else it }
+            renderCards()
+        }
         val card = selectedCard
         if (card != null && card.parent != null && !tablet) {
             val transition = MaterialContainerTransform().apply {
@@ -583,7 +676,8 @@ class MainActivity : AppCompatActivity() {
         }
         editor.visibility = View.GONE
         tabletPlaceholder?.visibility = View.VISIBLE
-        active = null; bodyInput = null; mindPanel = null; selectedCard = null
+        active = null; bodyInput = null; titleInput = null; mindPanel = null; selectedCard = null
+        formatToolbar = null; doneButton = null; editingMode = false; pendingStyles.clear(); suppressedStyles.clear(); pendingParagraph = null
         undoHistory.clear(); redoHistory.clear(); historyTask?.let(handler::removeCallbacks); editBurst = false
         if (!tablet && card != null && card.parent != null) handler.postDelayed({ refresh() }, 280) else refresh()
     }
@@ -607,12 +701,16 @@ class MainActivity : AppCompatActivity() {
         val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(12), 0, dp(12), 0) }
         val commands = listOf(
             "↶" to "undo", "↷" to "redo",
-            "B" to "bold", "I" to "italic", "U" to "underline", "S̶" to "strike", "▧" to "highlight",
+            "B" to "bold", "I" to "italic", "U" to "underline", "" to "strike", "▧" to "highlight",
             "H" to "heading", "❝" to "quote", "•" to "bullet", "☐" to "task", "―" to "divider",
             "≡" to "left", "☰" to "center", "≡›" to "right", "→" to "indentPlus", "←" to "indentMinus",
-            "🔗" to "link", "＋图" to "image",
+            "" to "link", "" to "image",
         )
-        for ((label, command) in commands) row.addView(action(label) { format(command) }, LinearLayout.LayoutParams(dp(50), dp(48)))
+        for ((label, command) in commands) {
+            val button = if (command in setOf("strike", "link", "image")) iconButton(command) { format(command) }
+                else action(label) { format(command) }
+            row.addView(button, LinearLayout.LayoutParams(dp(50), dp(48)))
+        }
         scroll.addView(row)
         return scroll
     }
@@ -634,8 +732,7 @@ class MainActivity : AppCompatActivity() {
             val start = if (selectionStart == 0) 0 else input.text.lastIndexOf('\n', selectionStart - 1) + 1
             captureUndo(input)
             when (input.text.getOrNull(start)) {
-                '☐' -> input.text.replace(start, start + 1, "☑")
-                '☑' -> input.text.replace(start, start + 1, "☐")
+                '☐', '☑' -> input.text.delete(start, (start + 2).coerceAtMost(input.length()))
                 else -> input.text.insert(start, "☐ ")
             }
             scheduleSave(); settleHistory()
@@ -651,7 +748,19 @@ class MainActivity : AppCompatActivity() {
         val paragraph = command in setOf("quote", "bullet", "heading", "left", "center", "right", "indentPlus", "indentMinus")
         val start = if (paragraph) (if (selectionStart == 0) -1 else input.text.lastIndexOf('\n', selectionStart - 1)).let { it + 1 } else selectionStart
         val end = if (paragraph) input.text.indexOf('\n', selectionEnd).let { if (it < 0) input.length() else it } else selectionEnd
-        if (start == end) { toast("先输入或选中要设置格式的文字"); return }
+        if (start == end) {
+            if (paragraph) pendingParagraph = if (pendingParagraph == command) null else command
+            else {
+                val inherited = input.text.getSpans(0, input.length(), Any::class.java).any {
+                    matchesFormat(it, command) && input.text.getSpanStart(it) < start && input.text.getSpanEnd(it) >= start
+                }
+                if (command in pendingStyles) pendingStyles.remove(command)
+                else if (command in suppressedStyles) suppressedStyles.remove(command)
+                else if (inherited) suppressedStyles.add(command)
+                else pendingStyles.add(command)
+            }
+            return
+        }
         if (command == "indentPlus" || command == "indentMinus") {
             captureUndo(input)
             val current = input.text.getSpans(start, end, LeadingMarginSpan.Standard::class.java)
@@ -662,24 +771,60 @@ class MainActivity : AppCompatActivity() {
             scheduleSave(); settleHistory()
             return
         }
-        val span = when (command) {
-            "bold" -> StyleSpan(Typeface.BOLD)
-            "italic" -> StyleSpan(Typeface.ITALIC)
-            "underline" -> UnderlineSpan()
-            "strike" -> StrikethroughSpan()
-            "highlight" -> BackgroundColorSpan(if (dark) 0xff51451c.toInt() else 0xffffeea3.toInt())
-            "heading" -> RelativeSizeSpan(1.35f)
-            "quote" -> QuoteSpan(green)
-            "bullet" -> BulletSpan(dp(12), green)
-            "center" -> AlignmentSpan.Standard(Layout.Alignment.ALIGN_CENTER)
-            "right" -> AlignmentSpan.Standard(Layout.Alignment.ALIGN_OPPOSITE)
-            else -> AlignmentSpan.Standard(Layout.Alignment.ALIGN_NORMAL)
-        }
         captureUndo(input)
-        input.text.setSpan(span, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        if (command == "quote") RichTextCodec.styleComment(input.text, start, end, dark)
-        if (command == "heading") input.text.setSpan(StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        val spans = input.text.getSpans(start, end, Any::class.java).filter { matchesFormat(it, command) &&
+            input.text.getSpanStart(it) < end && input.text.getSpanEnd(it) > start }
+        val covered = spans.any { input.text.getSpanStart(it) <= start && input.text.getSpanEnd(it) >= end &&
+            (command !in setOf("left", "center", "right") || (it as AlignmentSpan).alignment == (newFormatSpan(command) as AlignmentSpan).alignment) }
+        stripFormat(input.text, start, end, command)
+        if (!covered) {
+            input.text.setSpan(newFormatSpan(command), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            if (command == "quote") RichTextCodec.styleComment(input.text, start, end, dark)
+        } else if (command == "quote") RichTextCodec.removeCommentStyle(input.text, start, end, dark)
         scheduleSave(); settleHistory()
+    }
+
+    private fun stripFormat(text: Editable, start: Int, end: Int, command: String) {
+        val spans = text.getSpans(start, end, Any::class.java).filter {
+            matchesFormat(it, command) && text.getSpanStart(it) < end && text.getSpanEnd(it) > start
+        }
+        for (existing in spans) {
+            val oldStart = text.getSpanStart(existing)
+            val oldEnd = text.getSpanEnd(existing)
+            text.removeSpan(existing)
+            if (oldStart < start) text.setSpan(existing, oldStart, start, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            if (oldEnd > end) {
+                val continuation = if (existing is AlignmentSpan) AlignmentSpan.Standard(existing.alignment) else newFormatSpan(command)
+                text.setSpan(continuation, end, oldEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+        }
+    }
+
+    private fun matchesFormat(span: Any, command: String): Boolean = when (command) {
+        "bold" -> span is StyleSpan && span.style == Typeface.BOLD
+        "italic" -> span is StyleSpan && span.style == Typeface.ITALIC
+        "underline" -> span is UnderlineSpan
+        "strike" -> span is StrikethroughSpan
+        "highlight" -> span is BackgroundColorSpan
+        "heading" -> span is RelativeSizeSpan
+        "quote" -> span is QuoteSpan
+        "bullet" -> span is BulletSpan
+        "left", "center", "right" -> span is AlignmentSpan
+        else -> false
+    }
+
+    private fun newFormatSpan(command: String): Any = when (command) {
+        "bold" -> StyleSpan(Typeface.BOLD)
+        "italic" -> StyleSpan(Typeface.ITALIC)
+        "underline" -> UnderlineSpan()
+        "strike" -> StrikethroughSpan()
+        "highlight" -> BackgroundColorSpan(if (dark) 0xff51451c.toInt() else 0xffffeea3.toInt())
+        "heading" -> RelativeSizeSpan(1.35f)
+        "quote" -> QuoteSpan(green)
+        "bullet" -> BulletSpan(dp(12), green)
+        "center" -> AlignmentSpan.Standard(Layout.Alignment.ALIGN_CENTER)
+        "right" -> AlignmentSpan.Standard(Layout.Alignment.ALIGN_OPPOSITE)
+        else -> AlignmentSpan.Standard(Layout.Alignment.ALIGN_NORMAL)
     }
 
     private fun captureUndo(input: EditText) {
@@ -944,7 +1089,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun View.tapFeedback() {
         foreground = RippleDrawable(ColorStateList.valueOf(if (dark) 0x6654d81b else 0x4454d81b), null,
-            GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.WHITE) })
+            GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = dp(28).toFloat(); setColor(Color.WHITE) })
     }
 
     fun showSheet(title: String, items: Array<String>, selectedIndex: Int = -1, selected: (Int) -> Unit) {
@@ -1223,13 +1368,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun closeSettings() {
         val page = settingsOverlay ?: return
-        settingsOverlay = null
         if (aboutOpen) {
             aboutOpen = false
-            root.removeView(page)
-            openSettings()
+            settingsOverlay = settingsParent
+            settingsParent = null
+            page.animate().alpha(0f).translationX(dp(24).toFloat()).setDuration(190)
+                .withEndAction { root.removeView(page) }.start()
             return
         }
+        settingsOverlay = null
         page.animate().alpha(0f).translationX(dp(24).toFloat()).setDuration(190)
             .withEndAction { root.removeView(page) }.start()
     }
@@ -1252,7 +1399,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openAbout() {
-        settingsOverlay?.let(root::removeView)
+        settingsParent = settingsOverlay
         aboutOpen = true
         val page = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setBackgroundColor(this@MainActivity.background)
@@ -1272,7 +1419,7 @@ class MainActivity : AppCompatActivity() {
             addView(TextView(this@MainActivity).apply { text = "拾页 · Native"; textSize = 25f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink) })
             addView(TextView(this@MainActivity).apply { text = "给想法，留一页空白。"; textSize = 15f; setTextColor(secondary) })
             addView(TextView(this@MainActivity).apply { text = "by OpenALC"; textSize = 12f; setTextColor(secondary) })
-        })
+        }, LinearLayout.LayoutParams(-1, -2))
         content.addView(TextView(this).apply { text = "应用信息"; textSize = 14f; setTextColor(secondary); setPadding(dp(8), dp(12), 0, dp(6)) })
         settingsRow(content, "当前版本", "v${packageManager.getPackageInfo(packageName, 0).versionName}")
         settingsRow(content, "获取更新") {
@@ -1342,6 +1489,7 @@ class MainActivity : AppCompatActivity() {
         super.onStop()
         if (selectionMode) clearSelection()
         persistNow()
+        io.submit { }.get()
         io.execute { store.lockPrivate() }
         if (privateArea) {
             privateGeneration++
@@ -1362,18 +1510,19 @@ class MainActivity : AppCompatActivity() {
 
         fun submit(items: List<NativeNote>) {
             val previous = notes
+            val next = items.map { it.copy() }
             val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
                 override fun getOldListSize() = previous.size
-                override fun getNewListSize() = items.size
+                override fun getNewListSize() = next.size
                 override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int) =
-                    previous[oldItemPosition].id == items[newItemPosition].id
+                    previous[oldItemPosition].id == next[newItemPosition].id
                 override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
                     val old = previous[oldItemPosition]
-                    val new = items[newItemPosition]
+                    val new = next[newItemPosition]
                     return old.title == new.title && old.body == new.body && old.groupId == new.groupId && old.private == new.private
                 }
             })
-            notes = items
+            notes = next
             diff.dispatchUpdatesTo(this)
         }
 

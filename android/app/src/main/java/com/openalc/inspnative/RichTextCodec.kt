@@ -39,6 +39,16 @@ object RichTextCodec {
             start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
     }
 
+    fun removeCommentStyle(text: Spannable, start: Int, end: Int, dark: Boolean) {
+        text.getSpans(start, end, CommentTextSpan::class.java).forEach { span ->
+            val oldStart = text.getSpanStart(span)
+            val oldEnd = text.getSpanEnd(span)
+            text.removeSpan(span)
+            if (oldStart < start) styleComment(text, oldStart, start, dark)
+            if (oldEnd > end) styleComment(text, end, oldEnd, dark)
+        }
+    }
+
     fun empty(): String = JSONObject().put("version", 1).put("text", "").put("spans", JSONArray()).toString()
 
     fun plain(body: String): String = JSONObject(body).optString("text")

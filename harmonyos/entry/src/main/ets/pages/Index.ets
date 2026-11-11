@@ -36,6 +36,7 @@ struct Index {
   @State private activeId: string = '';
   @State private title: string = '';
   @State private body: string = '';
+  @State private editingMode: boolean = false;
   @State private treeMode: boolean = false;
   @State private selectedBranchId: string = '';
   @State private rows: BranchRow[] = [];
@@ -132,6 +133,8 @@ struct Index {
       this.settings = false;
     } else if (this.selectionMode) {
       this.clearSelection();
+    } else if (this.activeId !== '' && this.editingMode) {
+      this.finishEditing();
     } else if (this.activeId !== '') {
       this.leaveEditor();
     } else if (this.drawer) {
@@ -174,6 +177,7 @@ struct Index {
     this.search = '';
     this.listScroller.scrollEdge(Edge.Top);
     this.open(note);
+    this.editingMode = true;
   }
 
   private clearSelection(): void {
@@ -212,6 +216,7 @@ struct Index {
 
   private open(note: NativeNote): void {
     this.saveNow();
+    this.editingMode = false;
     this.activeId = note.id;
     this.title = note.title;
     this.body = note.body;
@@ -231,10 +236,17 @@ struct Index {
   private leaveEditor(): void {
     this.saveNow();
     this.activeId = '';
+    this.editingMode = false;
     this.rows = [];
     this.noteOptions = false;
     this.movingGroup = false;
     this.refresh();
+  }
+
+  private finishEditing(): void {
+    focusControl.requestFocus('editorDone');
+    this.saveNow();
+    this.editingMode = false;
   }
 
   private scheduleSave(): void {
@@ -325,7 +337,30 @@ struct Index {
 
   private formatRich(kind: string): void {
     const selection = this.richController.getSelection().selection;
-    if (selection[0] === selection[1]) return;
+    if (selection[0] === selection[1]) {
+      const style = this.richController.getTypingStyle();
+      const next: RichEditorTextStyle = style;
+      if (kind === 'bold') {
+        next.fontWeight = style.fontWeight === FontWeight.Bold ? FontWeight.Normal : FontWeight.Bold;
+      } else if (kind === 'italic') {
+        next.fontStyle = style.fontStyle === FontStyle.Italic ? FontStyle.Normal : FontStyle.Italic;
+      } else if (kind === 'heading') {
+        next.fontSize = style.fontSize === 24 ? 18 : 24;
+      } else if (kind === 'quote') {
+        const quoted = style.fontSize === 16;
+        next.fontSize = quoted ? 18 : 16;
+        next.fontColor = quoted ? (this.dark ? '#D8DED4' : '#141914') : (this.dark ? '#A4AFA1' : '#777E77');
+      } else if (kind === 'highlight') {
+        next.textBackgroundStyle = {
+          color: this.highlighted(style.textBackgroundStyle?.color) ? '#00000000' : '#6654D81B', radius: 3
+        };
+      } else {
+        const decoration = kind === 'underline' ? TextDecorationType.Underline : TextDecorationType.LineThrough;
+        next.decoration = { type: style.decoration?.type === decoration ? TextDecorationType.None : decoration };
+      }
+      this.richController.setTypingStyle(next);
+      return;
+    }
     const spans = this.richController.getSpans({ start: selection[0], end: selection[1] });
     const first = spans[0] as RichEditorTextSpanResult;
     const style = first.textStyle;
@@ -861,16 +896,26 @@ struct Index {
           Button('‹').type(ButtonType.Normal).fontColor(this.dark ? '#D8DED4' : '#141914').backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
             .onClick((): void => this.leaveEditor())
         }
-        TextInput({ text: this.title, placeholder: '笔记名称' })
-          .fontSize(22).fontColor(this.dark ? '#D8DED4' : '#141914').width(0).layoutWeight(1)
-          .backgroundColor(this.dark ? '#171B16' : '#F5F7F2')
-          .onChange((value: string): void => {
-            this.title = value;
-            if (this.activeNote()?.kind === 'mindmap') this.updateMind(this.mindRoot());
-            else this.scheduleSave();
-          })
-        Button('完成').type(ButtonType.Normal).fontColor('#141914').backgroundColor('#54D81B')
-          .onClick((): void => this.leaveEditor())
+        if (this.editingMode) {
+          TextInput({ text: this.title, placeholder: '笔记名称' }).id('editorTitle')
+            .fontSize(22).fontColor(this.dark ? '#D8DED4' : '#141914').width(0).layoutWeight(1)
+            .backgroundColor(this.dark ? '#171B16' : '#F5F7F2')
+            .onChange((value: string): void => {
+              this.title = value;
+              if (this.activeNote()?.kind === 'mindmap') this.updateMind(this.mindRoot());
+              else this.scheduleSave();
+            })
+        } else {
+          Text(this.title).fontSize(22).fontColor(this.dark ? '#D8DED4' : '#141914')
+            .maxLines(1).layoutWeight(1).onClick((): void => {
+              this.editingMode = true;
+              setTimeout((): void => { focusControl.requestFocus('editorTitle'); }, 0);
+            })
+        }
+        if (this.editingMode) {
+          Button('✓').type(ButtonType.Normal).fontColor('#141914').backgroundColor('#54D81B')
+            .id('editorDone').focusable(true).onClick((): void => this.finishEditing())
+        }
         if (this.activeNote()?.kind === 'mindmap') {
           Button() {
             Image(this.treeMode ? $rawfile('mind_list.svg') : $rawfile('mind_tree.svg')).width(24).height(24)
@@ -904,6 +949,7 @@ struct Index {
                     .onClick((): void => {
                       this.selectedBranchId = node.id;
                       if (node.depth === 0) return;
+                      if (!this.editingMode) { this.editingMode = true; return; }
                       this.editingTreeId = node.id; this.editingTreeText = node.text;
                     })
                 }
@@ -916,24 +962,34 @@ struct Index {
               ForEach(this.rows, (row: BranchRow) => {
               Row({ space: 4 }) {
                 Text('•').fontColor('#54D81B')
-                TextInput({ text: row.text }).fontSize(16).fontColor(this.dark ? '#D8DED4' : '#141914').width(0).layoutWeight(1)
-                  .backgroundColor(this.selectedBranchId === row.id ? (this.dark ? '#34562C' : '#E6F8DF') : (this.dark ? '#171B16' : '#F5F7F2'))
-                  .onFocus((): void => { this.selectedBranchId = row.id; })
-                  .onChange((value: string): void => this.editBranch(row.id, value))
+                if (this.editingMode) {
+                  TextInput({ text: row.text }).id(`mind-${row.id}`).fontSize(16).fontColor(this.dark ? '#D8DED4' : '#141914').width(0).layoutWeight(1)
+                    .backgroundColor(this.selectedBranchId === row.id ? (this.dark ? '#34562C' : '#E6F8DF') : (this.dark ? '#171B16' : '#F5F7F2'))
+                    .onFocus((): void => { this.selectedBranchId = row.id; })
+                    .onChange((value: string): void => this.editBranch(row.id, value))
+                } else {
+                  Text(row.text).fontSize(16).fontColor(this.dark ? '#D8DED4' : '#141914')
+                    .width(0).layoutWeight(1).onClick((): void => {
+                      this.selectedBranchId = row.id; this.editingMode = true;
+                      setTimeout((): void => { focusControl.requestFocus(`mind-${row.id}`); }, 0);
+                    })
+                }
               }.width(this.tablet ? 720 : '100%').padding({ left: row.depth * 18, right: 8 })
               }, (row: BranchRow): string => row.id)
             }.width('100%').constraintSize({ minHeight: '100%' }).padding(18)
               .justifyContent(FlexAlign.Start).alignItems(HorizontalAlign.Start)
           }.layoutWeight(1)
         }
-        Row() {
-          this.mindTool('升级', '↖', 'shallower')
-          this.mindTool('降级', '↘', 'deeper')
-          this.mindTool('子主题', '+', 'child')
-          this.mindTool('同级', '↳', 'sibling')
-          this.mindTool('更多', '···', 'more')
-        }.width('100%').padding({ left: 8, right: 8, top: 5, bottom: 5 })
-          .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+        if (this.editingMode) {
+          Row() {
+            this.mindTool('升级', '↖', 'shallower')
+            this.mindTool('降级', '↘', 'deeper')
+            this.mindTool('子主题', '+', 'child')
+            this.mindTool('同级', '↳', 'sibling')
+            this.mindTool('更多', '···', 'more')
+          }.width('100%').padding({ left: 8, right: 8, top: 5, bottom: 5 })
+            .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+        }
       } else {
         RichEditor(this.richOptions)
           .placeholder('开始记录…')
@@ -941,7 +997,9 @@ struct Index {
           .backgroundColor(this.dark ? '#171B16' : '#F5F7F2')
           .padding(22).layoutWeight(1).width('100%')
           .onReady((): void => { this.richReady = true; this.loadRich(); })
+          .onFocus((): void => { this.editingMode = true; })
           .onDidChange((): void => this.changedRich())
+        if (this.editingMode) {
         Scroll() {
           Row({ space: 8 }) {
             Button('H').fontColor(this.dark ? '#D8DED4' : '#141914')
@@ -967,6 +1025,7 @@ struct Index {
               .onClick((): void => this.formatRich('quote'))
           }
         }.scrollable(ScrollDirection.Horizontal).width('100%').padding(12)
+        }
       }
     }.width(0).layoutWeight(1).height('100%').backgroundColor(this.dark ? '#171B16' : '#F5F7F2')
   }
@@ -1109,7 +1168,7 @@ struct Index {
                 .fontColor(this.dark ? '#D8DED4' : '#141914')
               Text('给想法，留一页空白。').fontSize(15).fontColor(this.dark ? '#A4AFA1' : '#677166')
               Text('by OpenALC').fontSize(12).fontColor(this.dark ? '#A4AFA1' : '#677166')
-            }.width('100%').padding({ top: 24, bottom: 30 })
+            }.width('100%').alignItems(HorizontalAlign.Center).padding({ top: 24, bottom: 30 })
             Text('应用信息').fontSize(14).fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%')
             this.aboutItem('当前版本', 'v0.1.0', $rawfile('nav_inbox.svg'), '')
             this.aboutItem('获取更新', '', $rawfile('nav_archive.svg'), 'https://github.com/OpenALC/insp-native/releases')

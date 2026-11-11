@@ -43,15 +43,19 @@ class MindMapPanel(
     context: Context,
     private val note: NativeNote,
     private val changed: () -> Unit,
+    private val beginEditing: () -> Unit,
 ) : LinearLayout(context) {
     private val rootNode = MindNode.read(JSONObject(note.body).getJSONObject("root"))
     private val list = LinearLayout(context).apply { orientation = VERTICAL }
     private val nodeInputs = mutableMapOf<String, EditText>()
     private val nodeRows = mutableMapOf<String, LinearLayout>()
     private val scroll = ScrollView(context).apply { addView(list) }
-    private val tree = MindTreeView(context, rootNode, { node -> selectNode(node.id) }, { node -> editNode(node) })
+    private val tree = MindTreeView(context, rootNode, { node -> selectNode(node.id) }, { node ->
+        if (editing) editNode(node) else { selectNode(node.id); beginEditing() }
+    })
     private var treeMode = false
     private var selectedId = rootNode.id
+    private var editing = false
     private val toolbar = LinearLayout(context).apply {
         gravity = Gravity.CENTER_VERTICAL
         setPadding(dp(6), dp(5), dp(6), dp(5))
@@ -70,7 +74,7 @@ class MindMapPanel(
             val cell = LinearLayout(context).apply {
                 orientation = VERTICAL; gravity = Gravity.CENTER
                 foreground = RippleDrawable(ColorStateList.valueOf(0x4454d81b), null,
-                    GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.WHITE) })
+                    GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = dp(26).toFloat(); setColor(Color.WHITE) })
                 setOnClickListener { toolAction(action) }
             }
             val color = if (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK ==
@@ -82,7 +86,18 @@ class MindMapPanel(
             toolbar.addView(cell, LayoutParams(0, dp(52), 1f))
         }
         addView(toolbar, LayoutParams(LayoutParams.MATCH_PARENT, dp(62)))
+        toolbar.visibility = GONE
         renderList()
+    }
+
+    fun setEditing(value: Boolean) {
+        editing = value
+        toolbar.visibility = if (value) VISIBLE else GONE
+        nodeInputs.values.forEach { it.isFocusableInTouchMode = value; it.isCursorVisible = value }
+        if (!value) {
+            nodeInputs.values.forEach(EditText::clearFocus)
+            requestFocus()
+        }
     }
 
     fun renameRoot(title: String) {
@@ -136,7 +151,7 @@ class MindMapPanel(
         val row = LinearLayout(context).apply {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(14 + depth * 20), dp(4), dp(8), dp(4))
-            setOnClickListener { selectNode(node.id); inputFocus(node.id) }
+            setOnClickListener { selectNode(node.id); if (!editing) beginEditing(); inputFocus(node.id) }
         }
         val input = EditText(context).apply {
             setSingleLine(true)
@@ -144,6 +159,18 @@ class MindMapPanel(
             setText(node.text)
             textSize = 16f
             background = null
+            isFocusableInTouchMode = editing
+            isCursorVisible = editing
+            setOnTouchListener { _, event ->
+                if (!editing && event.actionMasked == MotionEvent.ACTION_UP) {
+                    beginEditing()
+                    requestFocus()
+                    setSelection(length())
+                    (context.getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
+                        .showSoftInput(this, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+                    true
+                } else false
+            }
             setOnFocusChangeListener { _, focused -> if (focused) selectNode(node.id) }
             setOnEditorActionListener { _, action, event ->
                 if (action == EditorInfo.IME_ACTION_NEXT ||
@@ -170,7 +197,13 @@ class MindMapPanel(
         node.children.forEach { renderNode(it, node, depth + 1) }
     }
 
-    private fun inputFocus(id: String) { nodeInputs[id]?.requestFocus() }
+    private fun inputFocus(id: String) {
+        nodeInputs[id]?.let { input ->
+            input.requestFocus()
+            (context.getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
+                .showSoftInput(input, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
 
     private fun selectNode(id: String) {
         selectedId = id
