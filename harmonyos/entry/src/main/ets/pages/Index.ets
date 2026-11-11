@@ -53,6 +53,7 @@ struct Index {
   @State private batchMoveOpen: boolean = false;
   @State private batchDeleteOpen: boolean = false;
   @State private settingsAbout: boolean = false;
+  @State private themeChoiceOpen: boolean = false;
   @State private layoutChoiceOpen: boolean = false;
   @State private tablet: boolean = false;
   @State private drawer: boolean = false;
@@ -115,7 +116,8 @@ struct Index {
   }
 
   onBackPress(): boolean {
-    if (this.layoutChoiceOpen) {
+    if (this.themeChoiceOpen || this.layoutChoiceOpen) {
+      this.themeChoiceOpen = false;
       this.layoutChoiceOpen = false;
     } else if (this.batchMoveOpen || this.batchDeleteOpen) {
       this.batchMoveOpen = false; this.batchDeleteOpen = false;
@@ -1063,6 +1065,22 @@ struct Index {
       })
   }
 
+  @Builder private themeChoice(label: string, value: boolean): void {
+    Button() {
+      Row({ space: 12 }) {
+        Image($rawfile('nav_settings.svg')).width(20).height(20)
+        Text(label).fontSize(17).fontColor(this.dark ? '#D8DED4' : '#141914').layoutWeight(1)
+        if (this.dark === value) Text('✓').fontSize(20).fontColor('#54D81B')
+      }.width('100%')
+    }.type(ButtonType.Normal).width('100%').backgroundColor(this.dark ? '#303830' : '#F4F6F2')
+      .borderRadius(16).onClick((): void => {
+        this.dark = value;
+        this.themeChoiceOpen = false;
+        this.syncSystemBars();
+        if (this.store !== null) { this.store.dark = value; this.store.saveNormal(); }
+      })
+  }
+
   @Builder private aboutItem(label: string, detail: string, icon: ResourceStr, link: string): void {
     Row({ space: 12 }) {
       if (link !== '') Image(icon).width(20).height(20)
@@ -1102,13 +1120,11 @@ struct Index {
             Row() {
               Image($rawfile('nav_settings.svg')).width(20).height(20)
               Text('外观').fontSize(17).fontColor(this.dark ? '#D8DED4' : '#141914').layoutWeight(1)
-              Toggle({ type: ToggleType.Switch, isOn: this.dark }).selectedColor('#54D81B')
-                .width(54).onChange((value: boolean): void => {
-                  this.dark = value; this.syncSystemBars();
-                  if (this.store !== null) { this.store.dark = value; this.store.saveNormal(); }
-                })
+              Text(this.dark ? '深色' : '浅色').fontSize(15).fontColor(this.dark ? '#A4AFA1' : '#677166')
+              Text('›').fontSize(19).fontColor(this.dark ? '#A4AFA1' : '#677166')
             }.justifyContent(FlexAlign.SpaceBetween).padding(18).width('100%')
               .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
+              .onClick((): void => { this.themeChoiceOpen = true; })
             Row() {
               Image($rawfile('nav_folder.svg')).width(20).height(20)
               Text('笔记布局').fontSize(17).fontColor(this.dark ? '#D8DED4' : '#141914').layoutWeight(1)
@@ -1218,6 +1234,22 @@ struct Index {
             Button('取消').width('100%').fontColor(this.dark ? '#A4AFA1' : '#677166')
               .backgroundColor(this.dark ? '#303830' : '#F4F6F2').borderRadius(16)
               .onClick((): void => { this.layoutChoiceOpen = false; })
+          }.width(this.tablet ? 480 : '100%').padding(20).borderRadius(28)
+            .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+            .alignSelf(ItemAlign.Center).margin({ bottom: 16 })
+        }.width('100%').height('100%').backgroundColor('#66000000')
+      }
+      if (this.themeChoiceOpen) {
+        Column() {
+          Blank().layoutWeight(1).onClick((): void => { this.themeChoiceOpen = false; })
+          Column({ space: 8 }) {
+            Text('外观').fontSize(23).fontWeight(FontWeight.Bold)
+              .fontColor(this.dark ? '#D8DED4' : '#141914').width('100%').padding({ bottom: 12 })
+            this.themeChoice('浅色', false)
+            this.themeChoice('深色', true)
+            Button('取消').width('100%').fontColor(this.dark ? '#A4AFA1' : '#677166')
+              .backgroundColor(this.dark ? '#303830' : '#F4F6F2').borderRadius(16)
+              .onClick((): void => { this.themeChoiceOpen = false; })
           }.width(this.tablet ? 480 : '100%').padding(20).borderRadius(28)
             .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
             .alignSelf(ItemAlign.Center).margin({ bottom: 16 })
