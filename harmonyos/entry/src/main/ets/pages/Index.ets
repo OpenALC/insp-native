@@ -814,10 +814,20 @@ struct Index {
         .layoutWeight(1).padding({ left: 14, right: 14 })
       if (this.selectionMode) {
         Row({ space: 10 }) {
-          Button('▱  移动到').layoutWeight(1).fontColor(this.dark ? '#D8DED4' : '#141914')
+          Button() {
+            Row({ space: 9 }) {
+              Image($rawfile('nav_folder.svg')).width(21).height(21)
+              Text('移动到').fontSize(15).fontColor(this.dark ? '#D8DED4' : '#141914')
+            }
+          }.type(ButtonType.Normal).layoutWeight(1).height(48)
             .backgroundColor(this.dark ? '#303830' : '#F0F0F0').borderRadius(17)
             .onClick((): void => { this.batchMoveOpen = true; })
-          Button('♲  删除').layoutWeight(1).fontColor('#B84848')
+          Button() {
+            Row({ space: 9 }) {
+              Image($rawfile('nav_trash.svg')).width(21).height(21)
+              Text('删除').fontSize(15).fontColor('#B84848')
+            }
+          }.type(ButtonType.Normal).layoutWeight(1).height(48)
             .backgroundColor(this.dark ? '#303830' : '#F0F0F0').borderRadius(17)
             .onClick((): void => { this.batchDeleteOpen = true; })
         }.padding(8).backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(24)
