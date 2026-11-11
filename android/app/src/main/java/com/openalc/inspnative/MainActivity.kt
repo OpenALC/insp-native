@@ -45,7 +45,10 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.Window
 import android.view.WindowInsets
+import android.view.WindowInsetsController
+import android.view.WindowManager
 import android.view.animation.OvershootInterpolator
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -66,7 +69,6 @@ import androidx.recyclerview.widget.SimpleItemAnimator
 import androidx.recyclerview.widget.StaggeredGridLayoutManager
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.transition.MaterialContainerTransform
 import androidx.transition.TransitionManager
 import org.json.JSONObject
@@ -1224,31 +1226,49 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun presentSheet(sheet: BottomSheetDialog, content: View) {
+    private fun presentSheet(sheet: Dialog, content: View) {
         val surround = FrameLayout(this).apply { setPadding(dp(16), 0, dp(16), dp(16)) }
         surround.addView(content, FrameLayout.LayoutParams(minOf(resources.displayMetrics.widthPixels - dp(32), dp(500)), -2, Gravity.CENTER_HORIZONTAL))
+        sheet.requestWindowFeature(Window.FEATURE_NO_TITLE)
         sheet.setContentView(surround)
+        sheet.window?.apply {
+            setBackgroundDrawableResource(android.R.color.transparent)
+            setDimAmount(.54f)
+            addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            setGravity(Gravity.BOTTOM)
+            attributes = attributes.apply { windowAnimations = R.style.NativeSheetAnimation }
+        }
         sheet.show()
-        val bottom = sheet.findViewById<View>(com.google.android.material.R.id.design_bottom_sheet)!!
-        bottom.setBackgroundColor(Color.TRANSPARENT)
+        sheet.window?.setLayout(-1, -2)
+        sheet.window?.decorView?.windowInsetsController?.apply {
+            val bars = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+            setSystemBarsAppearance(if (dark) 0 else bars, bars)
+        }
+    }
+
+    private fun sheetContent(title: String): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(14), dp(12), dp(14), dp(14))
+        background = rounded(paper, 28)
+        elevation = dp(12).toFloat()
+        addView(View(this@MainActivity).apply {
+            background = rounded(if (dark) 0xff50584d.toInt() else 0xffd0d9cc.toInt(), 4)
+        }, LinearLayout.LayoutParams(dp(36), dp(4)).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(20) })
+        addView(TextView(this@MainActivity).apply {
+            text = title; textSize = 24f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink)
+            setPadding(dp(12), dp(8), dp(12), dp(12))
+        })
     }
 
     fun showSheet(title: String, items: Array<String>, selectedIndex: Int = -1, selected: (Int) -> Unit) {
         window.insetsController?.hide(WindowInsets.Type.ime())
-        val sheet = BottomSheetDialog(this)
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(12), dp(18), dp(24))
-            background = rounded(paper, 28)
-        }
-        content.addView(TextView(this).apply {
-            text = title; textSize = 23f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink)
-            setPadding(dp(12), dp(12), dp(12), dp(14))
-        })
+        val sheet = Dialog(this)
+        val content = sheetContent(title)
         items.forEachIndexed { index, label ->
             val row = LinearLayout(this).apply {
                 gravity = Gravity.CENTER_VERTICAL; setPadding(dp(17), 0, dp(17), 0)
-                background = rounded(if (dark) 0xff30342e.toInt() else 0xfff4f6f2.toInt(), 16)
+                background = rounded(Color.TRANSPARENT, 16)
                 tapFeedback(); setOnClickListener { sheet.dismiss(); selected(index) }
             }
             row.addView(NativeIcon(this, iconFor(label), if (label.startsWith("删除")) 0xffbb4848.toInt() else ink), LinearLayout.LayoutParams(dp(22), dp(22)))
@@ -1257,26 +1277,20 @@ class MainActivity : AppCompatActivity() {
                 gravity = Gravity.CENTER_VERTICAL
             }, LinearLayout.LayoutParams(0, -1, 1f).apply { leftMargin = dp(14) })
             if (index == selectedIndex) row.addView(NativeIcon(this, "check", green), LinearLayout.LayoutParams(dp(20), dp(20)))
-            content.addView(row, LinearLayout.LayoutParams(-1, dp(54)).apply { bottomMargin = dp(8) })
+            content.addView(row, LinearLayout.LayoutParams(-1, dp(60)))
         }
         content.addView(TextView(this).apply {
-            text = "取消"; textSize = 16f; setTextColor(secondary); gravity = Gravity.CENTER
+            text = "取消"; textSize = 16f; setTextColor(ink); gravity = Gravity.CENTER
+            background = rounded(if (dark) 0xff30342e.toInt() else 0xfff0f0f0.toInt(), 16)
+            tapFeedback()
             setOnClickListener { sheet.dismiss() }
-        }, LinearLayout.LayoutParams(-1, dp(48)))
+        }, LinearLayout.LayoutParams(-1, dp(50)).apply { topMargin = dp(12) })
         presentSheet(sheet, content)
     }
 
     private fun showFormSheet(title: String, fields: View, actionLabel: String, submit: () -> Unit) {
-        val sheet = BottomSheetDialog(this)
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(12), dp(18), dp(24))
-            background = rounded(paper, 28)
-        }
-        content.addView(TextView(this).apply {
-            text = title; textSize = 23f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink)
-            setPadding(dp(12), dp(12), dp(12), dp(14))
-        })
+        val sheet = Dialog(this)
+        val content = sheetContent(title)
         content.addView(fields, LinearLayout.LayoutParams(-1, -2))
         val actions = LinearLayout(this).apply { gravity = Gravity.END or Gravity.CENTER_VERTICAL }
         actions.addView(action("取消") { sheet.dismiss() }, LinearLayout.LayoutParams(dp(76), dp(48)))

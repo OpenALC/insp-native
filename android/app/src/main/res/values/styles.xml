@@ -11,4 +11,8 @@
         <item name="android:windowActionModeOverlay">true</item>
         <item name="android:windowSoftInputMode">adjustResize</item>
     </style>
+    <style name="NativeSheetAnimation">
+        <item name="android:windowEnterAnimation">@anim/native_sheet_in</item>
+        <item name="android:windowExitAnimation">@anim/native_sheet_out</item>
+    </style>
 </resources>
