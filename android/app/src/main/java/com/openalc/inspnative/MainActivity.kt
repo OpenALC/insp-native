@@ -62,6 +62,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.core.content.FileProvider
 import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.DiffUtil
+import androidx.recyclerview.widget.SimpleItemAnimator
 import androidx.recyclerview.widget.StaggeredGridLayoutManager
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -251,6 +252,7 @@ class MainActivity : AppCompatActivity() {
         page.addView(filterScroll, LinearLayout.LayoutParams(-1, dp(52)))
         cards = RecyclerView(this).apply {
             layoutManager = StaggeredGridLayoutManager(if (tablet || listLayout) 1 else 2, StaggeredGridLayoutManager.VERTICAL)
+            (itemAnimator as SimpleItemAnimator).supportsChangeAnimations = false
             clipToPadding = false
             setPadding(dp(14), dp(16), dp(14), dp(18))
             addOnItemTouchListener(object : RecyclerView.SimpleOnItemTouchListener() {
