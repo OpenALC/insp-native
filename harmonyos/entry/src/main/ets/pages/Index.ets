@@ -65,7 +65,7 @@ struct Index {
 
   aboutToAppear(): void {
     const screen = display.getDefaultDisplaySync();
-    this.tablet = screen.width / screen.densityPixels >= 600;
+    this.tablet = screen.width / screen.densityPixels >= 900;
     NativeStore.open(getContext(this) as common.UIAbilityContext).then((store: NativeStore): void => {
       this.store = store;
       this.dark = store.dark;
