@@ -1325,7 +1325,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun pill(label: String, click: () -> Unit) = TextView(this).apply {
         text = label; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink); gravity = Gravity.CENTER
-        background = rounded(if (label.contains("灵感")) paper else 0xffe6f8df.toInt(), 28)
+        background = rounded(if (label.contains("灵感")) paper else if (dark) 0xff263f25.toInt() else 0xffe6f8df.toInt(), 28)
         setOnClickListener { click() }
     }
 
