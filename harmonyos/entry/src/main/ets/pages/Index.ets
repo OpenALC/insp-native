@@ -53,6 +53,7 @@ struct Index {
   @State private batchMoveOpen: boolean = false;
   @State private batchDeleteOpen: boolean = false;
   @State private settingsAbout: boolean = false;
+  @State private layoutChoiceOpen: boolean = false;
   @State private tablet: boolean = false;
   @State private drawer: boolean = false;
   @State private settings: boolean = false;
@@ -75,7 +76,7 @@ struct Index {
   aboutToAppear(): void {
     const screen = display.getDefaultDisplaySync();
     this.tablet = screen.width / screen.densityPixels >= 900;
-    this.sidebarWidth = Math.min(220, screen.width / screen.densityPixels * .56667);
+    this.sidebarWidth = screen.width / screen.densityPixels * .56667;
     NativeStore.open(getContext(this) as common.UIAbilityContext).then((store: NativeStore): void => {
       this.store = store;
       this.dark = store.dark;
@@ -114,7 +115,9 @@ struct Index {
   }
 
   onBackPress(): boolean {
-    if (this.batchMoveOpen || this.batchDeleteOpen) {
+    if (this.layoutChoiceOpen) {
+      this.layoutChoiceOpen = false;
+    } else if (this.batchMoveOpen || this.batchDeleteOpen) {
       this.batchMoveOpen = false; this.batchDeleteOpen = false;
     } else if (this.branchOptionsId !== '') {
       this.branchOptionsId = '';
@@ -665,6 +668,7 @@ struct Index {
   @Builder private sidebar(): void {
     Column({ space: 12 }) {
       Text('拾页 · Native').fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.dark ? '#D8DED4' : '#141914')
+        .width('100%').textAlign(TextAlign.Start).padding({ left: 12 })
       Text('by OpenALC').fontSize(12).fontColor(this.dark ? '#A4AFA1' : '#677166').alignSelf(ItemAlign.End)
       Blank().height(14)
       this.sidebarItem('全部笔记', 'all')
@@ -690,7 +694,8 @@ struct Index {
             Image($rawfile('nav_plus.svg')).width(18).height(18)
             Text('新建分组').fontSize(15).fontColor(this.dark ? '#D8DED4' : '#141914')
           }.width('100%')
-        }.type(ButtonType.Normal).backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(14)
+        }.type(ButtonType.Normal).width('100%').height(48)
+          .backgroundColor(this.dark ? '#20271E' : '#EBF1E8').borderRadius(14)
           .onClick((): void => { this.addingGroup = true; })
       }
       Blank()
@@ -699,22 +704,25 @@ struct Index {
           Row({ space: 10 }) {
             Image($rawfile('nav_lock.svg')).width(18).height(18)
             Text('退出隐私笔记').fontSize(15).fontColor(this.dark ? '#D8DED4' : '#141914')
-          }
-        }.type(ButtonType.Normal).backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(14).onClick((): void => this.leavePrivate())
+          }.width('100%')
+        }.type(ButtonType.Normal).width('100%').height(48)
+          .backgroundColor(this.dark ? '#20271E' : '#EBF1E8').borderRadius(14).onClick((): void => this.leavePrivate())
       } else {
         Button() {
           Row({ space: 10 }) {
             Image($rawfile('nav_lock.svg')).width(18).height(18)
             Text('隐私笔记').fontSize(15).fontColor(this.dark ? '#D8DED4' : '#141914')
-          }
-        }.type(ButtonType.Normal).backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(14).onClick((): void => { this.enterPrivate(); })
+          }.width('100%')
+        }.type(ButtonType.Normal).width('100%').height(48)
+          .backgroundColor(this.dark ? '#20271E' : '#EBF1E8').borderRadius(14).onClick((): void => { this.enterPrivate(); })
       }
       Button() {
         Row({ space: 10 }) {
           Image($rawfile('nav_settings.svg')).width(18).height(18)
           Text('设置').fontSize(15).fontColor(this.dark ? '#D8DED4' : '#141914')
-        }
-      }.type(ButtonType.Normal).backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+        }.width('100%')
+      }.type(ButtonType.Normal).width('100%').height(48)
+        .backgroundColor(this.dark ? '#20271E' : '#EBF1E8')
         .borderRadius(14).onClick((): void => { this.settings = true; this.drawer = false; })
     }
     .padding(12).width(this.tablet ? 190 : this.sidebarWidth).height('100%')
@@ -1030,6 +1038,33 @@ struct Index {
       .onClick((): void => this.branchAction(action))
   }
 
+  @Builder private layoutChoice(label: string, list: boolean): void {
+    Button() {
+      Row({ space: 12 }) {
+        Image(list ? $rawfile('nav_archive.svg') : $rawfile('nav_folder.svg')).width(20).height(20)
+        Text(label).fontSize(17).fontColor(this.dark ? '#D8DED4' : '#141914').layoutWeight(1)
+        if (this.listLayout === list) Text('✓').fontSize(20).fontColor('#54D81B')
+      }.width('100%')
+    }.type(ButtonType.Normal).width('100%').backgroundColor(this.dark ? '#303830' : '#F4F6F2')
+      .borderRadius(16).onClick((): void => {
+        this.listLayout = list;
+        this.layoutChoiceOpen = false;
+        if (this.store !== null) { this.store.listLayout = list; this.store.saveNormal(); }
+      })
+  }
+
+  @Builder private aboutItem(label: string, detail: string, icon: ResourceStr, link: string): void {
+    Row({ space: 12 }) {
+      if (link !== '') Image(icon).width(20).height(20)
+      Text(label).fontSize(16).fontColor(this.dark ? '#D8DED4' : '#141914').layoutWeight(1)
+      Text(detail).fontSize(13).fontColor(this.dark ? '#A4AFA1' : '#677166')
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      if (link !== '') Text('›').fontSize(19).fontColor(this.dark ? '#A4AFA1' : '#677166')
+    }.width('100%').padding(18)
+      .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
+      .onClick((): void => { if (link !== '') this.openLink(link); })
+  }
+
   @Builder private settingsPane(): void {
     Column({ space: 12 }) {
       Row() {
@@ -1048,21 +1083,10 @@ struct Index {
               Text('by OpenALC').fontSize(12).fontColor(this.dark ? '#A4AFA1' : '#677166')
             }.width('100%').padding({ top: 24, bottom: 30 })
             Text('应用信息').fontSize(14).fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%')
-            Text('当前版本                                      v0.1.0').fontSize(16)
-              .fontColor(this.dark ? '#D8DED4' : '#141914').width('100%').padding(18)
-              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
-            Text('获取更新   ›').fontSize(16)
-              .fontColor(this.dark ? '#D8DED4' : '#141914').width('100%').padding(18)
-              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
-              .onClick((): void => this.openLink('https://github.com/OpenALC/insp-native/releases'))
-            Text('GitHub 仓库   OpenALC/insp-native  ›').fontSize(16)
-              .fontColor(this.dark ? '#D8DED4' : '#141914').width('100%').padding(18)
-              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
-              .onClick((): void => this.openLink('https://github.com/OpenALC/insp-native'))
-            Text('开源协议   MIT  ›').fontSize(16)
-              .fontColor(this.dark ? '#D8DED4' : '#141914').width('100%').padding(18)
-              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
-              .onClick((): void => this.openLink('https://github.com/OpenALC/insp-native/blob/main/LICENSE'))
+            this.aboutItem('当前版本', 'v0.1.0', $rawfile('nav_inbox.svg'), '')
+            this.aboutItem('获取更新', '', $rawfile('nav_archive.svg'), 'https://github.com/OpenALC/insp-native/releases')
+            this.aboutItem('GitHub 仓库', 'OpenALC/insp-native', $rawfile('nav_folder.svg'), 'https://github.com/OpenALC/insp-native')
+            this.aboutItem('开源协议', 'MIT', $rawfile('nav_lock.svg'), 'https://github.com/OpenALC/insp-native/blob/main/LICENSE')
           } else {
             Text('外观').fontSize(14).fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%')
             Row() {
@@ -1079,12 +1103,10 @@ struct Index {
               Image($rawfile('nav_folder.svg')).width(20).height(20)
               Text('笔记布局').fontSize(17).fontColor(this.dark ? '#D8DED4' : '#141914').layoutWeight(1)
               Text(this.listLayout ? '列表' : '宫格').fontSize(15).fontColor(this.dark ? '#A4AFA1' : '#677166')
+              Text('›').fontSize(19).fontColor(this.dark ? '#A4AFA1' : '#677166')
             }.justifyContent(FlexAlign.SpaceBetween).padding(18).width('100%')
               .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
-              .onClick((): void => {
-                this.listLayout = !this.listLayout;
-                if (this.store !== null) { this.store.listLayout = this.listLayout; this.store.saveNormal(); }
-              })
+              .onClick((): void => { this.layoutChoiceOpen = true; })
             Text('安全与隐私').fontSize(14).fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%')
             Row({ space: 12 }) {
               Image($rawfile('nav_inbox.svg')).width(20).height(20)
@@ -1169,6 +1191,22 @@ struct Index {
             Button('取消').width('100%').fontColor(this.dark ? '#A4AFA1' : '#677166')
               .backgroundColor(this.dark ? '#303830' : '#F4F6F2').borderRadius(16)
               .onClick((): void => { this.homeOptions = false; })
+          }.width(this.tablet ? 480 : '100%').padding(20).borderRadius(28)
+            .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+            .alignSelf(ItemAlign.Center).margin({ bottom: 16 })
+        }.width('100%').height('100%').backgroundColor('#66000000')
+      }
+      if (this.layoutChoiceOpen) {
+        Column() {
+          Blank().layoutWeight(1).onClick((): void => { this.layoutChoiceOpen = false; })
+          Column({ space: 8 }) {
+            Text('笔记布局').fontSize(23).fontWeight(FontWeight.Bold)
+              .fontColor(this.dark ? '#D8DED4' : '#141914').width('100%').padding({ bottom: 12 })
+            this.layoutChoice('宫格', false)
+            this.layoutChoice('列表', true)
+            Button('取消').width('100%').fontColor(this.dark ? '#A4AFA1' : '#677166')
+              .backgroundColor(this.dark ? '#303830' : '#F4F6F2').borderRadius(16)
+              .onClick((): void => { this.layoutChoiceOpen = false; })
           }.width(this.tablet ? 480 : '100%').padding(20).borderRadius(28)
             .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
             .alignSelf(ItemAlign.Center).margin({ bottom: 16 })
