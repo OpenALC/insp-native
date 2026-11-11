@@ -5,6 +5,9 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
+import android.content.res.ColorStateList
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
@@ -44,27 +47,41 @@ class MindMapPanel(
     private val rootNode = MindNode.read(JSONObject(note.body).getJSONObject("root"))
     private val list = LinearLayout(context).apply { orientation = VERTICAL }
     private val nodeInputs = mutableMapOf<String, EditText>()
+    private val nodeRows = mutableMapOf<String, LinearLayout>()
     private val scroll = ScrollView(context).apply { addView(list) }
-    private val tree = MindTreeView(context, rootNode) { editNode(it) }
+    private val tree = MindTreeView(context, rootNode, { node -> selectNode(node.id) }, { node -> editNode(node) })
     private var treeMode = false
+    private var selectedId = rootNode.id
+    private val toolbar = LinearLayout(context).apply {
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(6), dp(5), dp(6), dp(5))
+        setBackgroundColor(if (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES) 0xff20221f.toInt() else Color.WHITE)
+    }
 
     init {
         orientation = VERTICAL
-        val tools = LinearLayout(context).apply { gravity = Gravity.CENTER_VERTICAL }
-        tools.addView(TextView(context).apply {
-            text = "＋ 分支"
-            textSize = 15f
-            gravity = Gravity.CENTER
-            setPadding(dp(18), 0, dp(18), 0)
-            setOnClickListener {
-                val node = MindNode(UUID.randomUUID().toString(), "新分支")
-                rootNode.children.add(node); update(node.id)
-            }
-        }, LayoutParams(LayoutParams.WRAP_CONTENT, dp(48)))
-        addView(tools, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         addView(scroll, LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f))
         addView(tree, LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f))
         tree.visibility = GONE
+        for ((label, action) in listOf(
+            "升级" to "outdent", "降级" to "indent", "子主题" to "child", "同级" to "sibling", "更多" to "more"
+        )) {
+            val cell = LinearLayout(context).apply {
+                orientation = VERTICAL; gravity = Gravity.CENTER
+                foreground = RippleDrawable(ColorStateList.valueOf(0x4454d81b), null,
+                    GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.WHITE) })
+                setOnClickListener { toolAction(action) }
+            }
+            val color = if (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK ==
+                android.content.res.Configuration.UI_MODE_NIGHT_YES) 0xffd4d4d4.toInt() else Color.BLACK
+            cell.addView(NativeIcon(context, if (action == "child") "plus" else if (action == "more") "more" else action, color),
+                LayoutParams(dp(19), dp(19)))
+            cell.addView(TextView(context).apply { text = label; textSize = 12f; gravity = Gravity.CENTER; setTextColor(color) },
+                LayoutParams(LayoutParams.WRAP_CONTENT, dp(22)))
+            toolbar.addView(cell, LayoutParams(0, dp(52), 1f))
+        }
+        addView(toolbar, LayoutParams(LayoutParams.MATCH_PARENT, dp(62)))
         renderList()
     }
 
@@ -92,6 +109,7 @@ class MindMapPanel(
     }
 
     private fun update(focusId: String? = null) {
+        if (focusId != null) selectedId = focusId
         save(); renderList()
         if (focusId != null) post {
             nodeInputs[focusId]?.apply {
@@ -104,18 +122,21 @@ class MindMapPanel(
     private fun renderList() {
         list.removeAllViews()
         nodeInputs.clear()
+        nodeRows.clear()
         if (rootNode.children.isEmpty()) list.addView(TextView(context).apply {
-            text = "点击“＋ 分支”，从一个想法开始。"
+            text = "点击下方“子主题”，从一个想法开始。"
             textSize = 16f
             setPadding(dp(22), dp(30), dp(22), dp(30))
         })
         rootNode.children.forEach { child -> renderNode(child, rootNode, 0) }
+        selectNode(selectedId)
     }
 
     private fun renderNode(node: MindNode, parent: MindNode, depth: Int) {
         val row = LinearLayout(context).apply {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(14 + depth * 20), dp(4), dp(8), dp(4))
+            setOnClickListener { selectNode(node.id); inputFocus(node.id) }
         }
         val input = EditText(context).apply {
             setSingleLine(true)
@@ -123,6 +144,7 @@ class MindMapPanel(
             setText(node.text)
             textSize = 16f
             background = null
+            setOnFocusChangeListener { _, focused -> if (focused) selectNode(node.id) }
             setOnEditorActionListener { _, action, event ->
                 if (action == EditorInfo.IME_ACTION_NEXT ||
                     (event?.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN)) {
@@ -142,47 +164,65 @@ class MindMapPanel(
             })
         }
         nodeInputs[node.id] = input
-        row.addView(input, LayoutParams(0, dp(46), 1f))
-        row.addView(TextView(context).apply {
-            text = "＋"
-            textSize = 24f
-            gravity = Gravity.CENTER
-            setOnClickListener {
-                val child = MindNode(UUID.randomUUID().toString(), "新分支")
-                node.children.add(child); update(child.id)
-            }
-        }, LayoutParams(dp(42), dp(42)))
-        row.addView(TextView(context).apply {
-            text = "⋯"
-            textSize = 22f
-            gravity = Gravity.CENTER
-            setOnClickListener { actions(node, parent) }
-        }, LayoutParams(dp(42), dp(42)))
+        row.addView(input, LayoutParams(LayoutParams.MATCH_PARENT, dp(46)))
+        nodeRows[node.id] = row
         list.addView(row, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         node.children.forEach { renderNode(it, node, depth + 1) }
     }
 
+    private fun inputFocus(id: String) { nodeInputs[id]?.requestFocus() }
+
+    private fun selectNode(id: String) {
+        selectedId = id
+        nodeRows.forEach { (key, row) ->
+            row.setBackgroundColor(if (key == id) 0x2254d81b else Color.TRANSPARENT)
+        }
+    }
+
+    private fun toolAction(action: String) {
+        val node = if (selectedId == rootNode.id) rootNode else findNode(rootNode, selectedId) ?: rootNode
+        val parent = findParent(rootNode, node)
+        when (action) {
+            "child" -> { val child = MindNode(UUID.randomUUID().toString(), "新分支"); node.children.add(child); update(child.id) }
+            "sibling" -> {
+                val destination = parent ?: rootNode
+                val sibling = MindNode(UUID.randomUUID().toString(), "新分支")
+                destination.children.add(if (parent == null) destination.children.size else destination.children.indexOf(node) + 1, sibling)
+                update(sibling.id)
+            }
+            "indent" -> if (parent != null) {
+                val index = parent.children.indexOf(node)
+                if (index > 0) { parent.children.removeAt(index); parent.children[index - 1].children.add(node); update(node.id) }
+            }
+            "outdent" -> if (parent != null) {
+                val grandparent = findParent(rootNode, parent)
+                if (grandparent != null) { parent.children.remove(node); grandparent.children.add(grandparent.children.indexOf(parent) + 1, node); update(node.id) }
+            }
+            "more" -> if (parent != null) actions(node, parent)
+        }
+    }
+
     private fun actions(node: MindNode, parent: MindNode) {
-        val options = arrayOf("上移", "下移", "增加层级", "减少层级", "删除分支")
+        val options = arrayOf("上移", "下移", "删除分支")
         (context as MainActivity).showSheet("分支操作", options) { choice ->
             val index = parent.children.indexOf(node)
             when (choice) {
                 0 -> if (index > 0) { parent.children.removeAt(index); parent.children.add(index - 1, node) }
                 1 -> if (index < parent.children.lastIndex) { parent.children.removeAt(index); parent.children.add(index + 1, node) }
-                2 -> if (index > 0) { parent.children.removeAt(index); parent.children[index - 1].children.add(node) }
-                3 -> {
-                    val grandparent = findParent(rootNode, parent)
-                    if (grandparent != null) { parent.children.remove(node); grandparent.children.add(grandparent.children.indexOf(parent) + 1, node) }
-                }
-                4 -> parent.children.remove(node)
+                2 -> parent.children.remove(node)
             }
-            update(if (choice == 4) null else node.id)
+            update(if (choice == 2) null else node.id)
         }
     }
 
     private fun findParent(current: MindNode, child: MindNode): MindNode? {
         if (current.children.contains(child)) return current
         return current.children.firstNotNullOfOrNull { findParent(it, child) }
+    }
+
+    private fun findNode(current: MindNode, id: String): MindNode? {
+        if (current.id == id) return current
+        return current.children.firstNotNullOfOrNull { findNode(it, id) }
     }
 
     private fun editNode(node: MindNode) {
@@ -195,7 +235,8 @@ class MindMapPanel(
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 }
 
-private class MindTreeView(context: Context, private val root: MindNode, private val edit: (MindNode) -> Unit) : View(context) {
+private class MindTreeView(context: Context, private val root: MindNode, private val select: (MindNode) -> Unit,
+                           private val edit: (MindNode) -> Unit) : View(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val nodes = mutableListOf<Triple<MindNode, Float, Float>>()
     private val density = resources.displayMetrics.density
@@ -205,6 +246,8 @@ private class MindTreeView(context: Context, private val root: MindNode, private
     private var lastX = 0f
     private var lastY = 0f
     private var moved = false
+    private var selectedId = root.id
+    private var lastTapAt = 0L
     private val detector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScale(detector: ScaleGestureDetector): Boolean {
             scale = (scale * detector.scaleFactor).coerceIn(.55f, 2.5f)
@@ -241,6 +284,11 @@ private class MindTreeView(context: Context, private val root: MindNode, private
         for ((node, x, y) in nodes) {
             paint.color = if (node === root) 0xffe8f8de.toInt() else 0xffffffff.toInt()
             canvas.drawRoundRect(RectF(x, y, x + 185, y + 58), 20f, 20f, paint)
+            if (node.id == selectedId) {
+                paint.color = 0xff54d81b.toInt(); paint.style = Paint.Style.STROKE; paint.strokeWidth = 2f
+                canvas.drawRoundRect(RectF(x, y, x + 185, y + 58), 20f, 20f, paint)
+                paint.style = Paint.Style.FILL
+            }
             paint.color = Color.BLACK
             paint.textSize = 20f
             canvas.drawText(node.text.take(12), x + 14, y + 36, paint)
@@ -264,7 +312,13 @@ private class MindTreeView(context: Context, private val root: MindNode, private
             MotionEvent.ACTION_UP -> if (!moved) {
                 val x = (event.x - offsetX) / (scale * density)
                 val y = (event.y - offsetY) / (scale * density)
-                nodes.firstOrNull { x in it.second..(it.second + 185f) && y in it.third..(it.third + 58f) }?.first?.let(edit)
+                nodes.firstOrNull { x in it.second..(it.second + 185f) && y in it.third..(it.third + 58f) }?.first?.let { node ->
+                    val now = android.os.SystemClock.uptimeMillis()
+                    if (selectedId == node.id && now - lastTapAt < 380) edit(node) else {
+                        selectedId = node.id; select(node); invalidate()
+                    }
+                    lastTapAt = now
+                }
             }
         }
         return true

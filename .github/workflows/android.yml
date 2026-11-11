@@ -1,0 +1,30 @@
+name: Android Native
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-java@v6.2.0
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v4.0.4
+      - run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - run: chmod +x gradlew && ./gradlew assembleDebug
+        working-directory: android
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: insp-native-android-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

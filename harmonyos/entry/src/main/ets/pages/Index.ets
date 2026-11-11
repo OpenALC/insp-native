@@ -37,6 +37,7 @@ struct Index {
   @State private title: string = '';
   @State private body: string = '';
   @State private treeMode: boolean = false;
+  @State private selectedBranchId: string = '';
   @State private rows: BranchRow[] = [];
   @State private treeNodes: TreePoint[] = [];
   @State private treeLines: string = '';
@@ -47,6 +48,10 @@ struct Index {
   @State private branchOptionsId: string = '';
   @State private dark: boolean = false;
   @State private listLayout: boolean = false;
+  @State private selectionMode: boolean = false;
+  @State private selectedIds: string[] = [];
+  @State private batchMoveOpen: boolean = false;
+  @State private batchDeleteOpen: boolean = false;
   @State private settingsAbout: boolean = false;
   @State private tablet: boolean = false;
   @State private drawer: boolean = false;
@@ -56,16 +61,21 @@ struct Index {
   @State private groupName: string = '';
   @State private search: string = '';
   @State private noteOptions: boolean = false;
+  @State private homeOptions: boolean = false;
   @State private movingGroup: boolean = false;
   private saveTimer: number = -1;
   private richController: RichEditorController = new RichEditorController();
   private richOptions: RichEditorOptions = { controller: this.richController };
   private richReady: boolean = false;
   private richLoading: boolean = false;
+  private listScroller: Scroller = new Scroller();
+  private sidebarWidth: number = 220;
+  private suppressSelectionClick: string = '';
 
   aboutToAppear(): void {
     const screen = display.getDefaultDisplaySync();
     this.tablet = screen.width / screen.densityPixels >= 900;
+    this.sidebarWidth = Math.min(220, screen.width / screen.densityPixels * .56667);
     NativeStore.open(getContext(this) as common.UIAbilityContext).then((store: NativeStore): void => {
       this.store = store;
       this.dark = store.dark;
@@ -89,6 +99,10 @@ struct Index {
     });
   }
 
+  private openLink(link: string): void {
+    (getContext(this) as common.UIAbilityContext).openLink(link);
+  }
+
   aboutToDisappear(): void {
     this.saveNow();
     this.store?.flush().then((): void => { this.store?.close(); });
@@ -100,8 +114,19 @@ struct Index {
   }
 
   onBackPress(): boolean {
-    if (this.settings) {
+    if (this.batchMoveOpen || this.batchDeleteOpen) {
+      this.batchMoveOpen = false; this.batchDeleteOpen = false;
+    } else if (this.branchOptionsId !== '') {
+      this.branchOptionsId = '';
+    } else if (this.noteOptions || this.homeOptions) {
+      this.noteOptions = false;
+      this.homeOptions = false;
+    } else if (this.settingsAbout) {
+      this.settingsAbout = false;
+    } else if (this.settings) {
       this.settings = false;
+    } else if (this.selectionMode) {
+      this.clearSelection();
     } else if (this.activeId !== '') {
       this.leaveEditor();
     } else if (this.drawer) {
@@ -123,7 +148,7 @@ struct Index {
 
   private visibleNotes(): NativeNote[] {
     return this.notes.filter((note: NativeNote): boolean => {
-      const groupMatches = this.groupId === 'all' || note.groupId === this.groupId;
+      const groupMatches = this.groupId === 'all' || (this.groupId === 'ungrouped' ? note.groupId === null : note.groupId === this.groupId);
       const content = note.kind === 'mindmap' ? this.mindText((JSON.parse(note.body) as MindDocument).root) : readRich(note.body).text;
       const wordsMatch = this.search === '' || (note.title + ' ' + content).toLowerCase().includes(this.search.toLowerCase());
       return groupMatches && wordsMatch;
@@ -136,12 +161,48 @@ struct Index {
 
   private createNote(kind: string): void {
     if (this.store === null) return;
-    const note = newNote(kind, this.groupId === 'all' ? null : this.groupId, this.privateOpen);
+    const note = newNote(kind, this.groupId === 'all' || this.groupId === 'ungrouped' ? null : this.groupId, this.privateOpen);
     if (this.privateOpen) this.store.privateNotes.unshift(note);
     else this.store.notes.unshift(note);
     this.storeSave();
     this.refresh();
+    this.search = '';
+    this.listScroller.scrollEdge(Edge.Top);
     this.open(note);
+  }
+
+  private clearSelection(): void {
+    this.selectionMode = false;
+    this.selectedIds = [];
+    this.batchMoveOpen = false;
+    this.batchDeleteOpen = false;
+    this.suppressSelectionClick = '';
+  }
+
+  private toggleSelection(id: string): void {
+    const selected = this.selectedIds.includes(id)
+      ? this.selectedIds.filter((item: string): boolean => item !== id)
+      : [...this.selectedIds, id];
+    if (selected.length === 0) this.clearSelection();
+    else { this.selectionMode = true; this.selectedIds = selected; }
+  }
+
+  private moveSelected(groupId: string | null): void {
+    const store = this.store;
+    if (store === null) return;
+    const notes = this.privateOpen ? store.privateNotes : store.notes;
+    notes.forEach((note: NativeNote): void => {
+      if (this.selectedIds.includes(note.id)) note.groupId = groupId;
+    });
+    this.storeSave(); this.clearSelection(); this.refresh();
+  }
+
+  private deleteSelected(): void {
+    const store = this.store;
+    if (store === null) return;
+    if (this.privateOpen) store.privateNotes = store.privateNotes.filter((note: NativeNote): boolean => !this.selectedIds.includes(note.id));
+    else store.notes = store.notes.filter((note: NativeNote): boolean => !this.selectedIds.includes(note.id));
+    this.storeSave(); this.clearSelection(); this.refresh();
   }
 
   private open(note: NativeNote): void {
@@ -150,6 +211,7 @@ struct Index {
     this.title = note.title;
     this.body = note.body;
     this.treeMode = false;
+    this.selectedBranchId = note.kind === 'mindmap' ? (JSON.parse(note.body) as MindDocument).root.id : '';
     this.noteOptions = false;
     this.movingGroup = false;
     this.refreshBranches();
@@ -513,7 +575,20 @@ struct Index {
     const root = this.mindRoot();
     const parent = parentId === '' ? root : this.findBranch(root, parentId);
     if (parent === null) return;
-    parent.children.push({ id: newId(), text: '新分支', children: [] });
+    const id = newId();
+    parent.children.push({ id: id, text: '新分支', children: [] });
+    this.selectedBranchId = id;
+    this.updateMind(root);
+  }
+
+  private addSibling(): void {
+    const root = this.mindRoot();
+    const parent = this.findParent(root, this.selectedBranchId);
+    if (parent === null) { this.addBranch(root.id); return; }
+    const index = parent.children.findIndex((node: MindBranch): boolean => node.id === this.selectedBranchId);
+    const id = newId();
+    parent.children.splice(index + 1, 0, { id: id, text: '新分支', children: [] });
+    this.selectedBranchId = id;
     this.updateMind(root);
   }
 
@@ -560,6 +635,7 @@ struct Index {
     const parent = this.findParent(root, id);
     if (parent === null) return;
     parent.children = parent.children.filter((node: MindBranch): boolean => node.id !== id);
+    this.selectedBranchId = parent.id;
     this.updateMind(root);
   }
 
@@ -592,6 +668,8 @@ struct Index {
       Text('by OpenALC').fontSize(12).fontColor(this.dark ? '#A4AFA1' : '#677166').alignSelf(ItemAlign.End)
       Blank().height(14)
       this.sidebarItem('全部笔记', 'all')
+      this.sidebarItem('未分组', 'ungrouped')
+      Text('分组').fontSize(12).fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%').padding({ top: 12, left: 12 })
       ForEach(this.groups, (group: NoteGroup) => {
         this.sidebarItem(group.name, group.id)
       }, (group: NoteGroup): string => group.id)
@@ -607,27 +685,52 @@ struct Index {
             .onClick((): void => this.addGroup())
         }
       } else {
-        Button('＋ 新建分组').type(ButtonType.Normal).fontColor(this.dark ? '#D8DED4' : '#141914')
-          .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(14)
+        Button() {
+          Row({ space: 10 }) {
+            Image($rawfile('nav_plus.svg')).width(18).height(18)
+            Text('新建分组').fontSize(15).fontColor(this.dark ? '#D8DED4' : '#141914')
+          }.width('100%')
+        }.type(ButtonType.Normal).backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(14)
           .onClick((): void => { this.addingGroup = true; })
       }
       Blank()
       if (this.privateOpen) {
-        Button('退出隐私笔记').type(ButtonType.Normal).fontColor(this.dark ? '#D8DED4' : '#141914')
-          .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(14).onClick((): void => this.leavePrivate())
+        Button() {
+          Row({ space: 10 }) {
+            Image($rawfile('nav_lock.svg')).width(18).height(18)
+            Text('退出隐私笔记').fontSize(15).fontColor(this.dark ? '#D8DED4' : '#141914')
+          }
+        }.type(ButtonType.Normal).backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(14).onClick((): void => this.leavePrivate())
       } else {
-        Button('隐私笔记').type(ButtonType.Normal).fontColor(this.dark ? '#D8DED4' : '#141914')
-          .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(14).onClick((): void => { this.enterPrivate(); })
+        Button() {
+          Row({ space: 10 }) {
+            Image($rawfile('nav_lock.svg')).width(18).height(18)
+            Text('隐私笔记').fontSize(15).fontColor(this.dark ? '#D8DED4' : '#141914')
+          }
+        }.type(ButtonType.Normal).backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(14).onClick((): void => { this.enterPrivate(); })
       }
-      Button('设置').type(ButtonType.Normal).fontColor(this.dark ? '#D8DED4' : '#141914').backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+      Button() {
+        Row({ space: 10 }) {
+          Image($rawfile('nav_settings.svg')).width(18).height(18)
+          Text('设置').fontSize(15).fontColor(this.dark ? '#D8DED4' : '#141914')
+        }
+      }.type(ButtonType.Normal).backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
         .borderRadius(14).onClick((): void => { this.settings = true; this.drawer = false; })
     }
-    .padding(20).width(this.tablet ? 190 : 220).height('100%')
+    .padding(12).width(this.tablet ? 190 : this.sidebarWidth).height('100%')
     .backgroundColor(this.dark ? '#20271E' : '#EBF1E8')
   }
 
   @Builder private sidebarItem(label: string, id: string): void {
-    Text(label).fontSize(16).fontColor(this.dark ? '#D8DED4' : '#141914').width('100%').padding(12)
+    Row({ space: 8 }) {
+      if (id === 'all') Image($rawfile('nav_inbox.svg')).width(18).height(18)
+      else if (id === 'ungrouped') Image($rawfile('nav_archive.svg')).width(18).height(18)
+      else Image($rawfile('nav_folder.svg')).width(18).height(18)
+      Text(label).fontSize(16).fontColor(this.dark ? '#D8DED4' : '#141914').layoutWeight(1)
+      Text((id === 'all' ? this.notes.length : id === 'ungrouped' ? this.notes.filter((note: NativeNote): boolean => note.groupId === null).length
+        : this.notes.filter((note: NativeNote): boolean => note.groupId === id).length).toString())
+        .fontSize(12).fontColor(this.dark ? '#A4AFA1' : '#677166')
+    }.width('100%').padding(12)
       .backgroundColor(this.groupId === id ? '#4454D81B' : (this.dark ? '#20271E' : '#EBF1E8'))
       .borderRadius(14)
       .onClick((): void => { this.groupId = id; this.drawer = false; this.activeId = ''; })
@@ -640,9 +743,29 @@ struct Index {
           Button('☰').type(ButtonType.Normal).fontColor(this.dark ? '#D8DED4' : '#141914').backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
             .onClick((): void => { this.drawer = true; })
         }
-        Text(this.privateOpen ? '隐私笔记' : '笔记').fontSize(28).fontWeight(FontWeight.Bold)
+        Text(this.selectionMode ? `已选 ${this.selectedIds.length} 项` : this.privateOpen ? '隐私笔记' : '笔记').fontSize(28).fontWeight(FontWeight.Bold)
           .fontColor(this.dark ? '#D8DED4' : '#141914').layoutWeight(1)
-        Text(this.visibleNotes().length.toString()).fontSize(15).fontColor(this.dark ? '#A4AFA1' : '#677166')
+        if (this.selectionMode) {
+          Button(this.selectedIds.length === this.visibleNotes().length ? '取消全选' : '全选').type(ButtonType.Normal)
+            .fontColor(this.dark ? '#D8DED4' : '#141914').backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+            .onClick((): void => {
+              if (this.selectedIds.length === this.visibleNotes().length) this.clearSelection();
+              else this.selectedIds = this.visibleNotes().map((note: NativeNote): string => note.id);
+            })
+          Button('取消').type(ButtonType.Normal).fontColor(this.dark ? '#D8DED4' : '#141914')
+            .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').onClick((): void => this.clearSelection())
+        } else {
+          Button(this.listLayout ? '▦' : '☷').type(ButtonType.Normal)
+            .fontColor(this.dark ? '#D8DED4' : '#141914').backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+            .onClick((): void => {
+              this.listLayout = !this.listLayout;
+              if (this.store !== null) { this.store.listLayout = this.listLayout; this.store.saveNormal(); }
+            })
+          Button('⋯').type(ButtonType.Normal)
+            .fontColor(this.dark ? '#D8DED4' : '#141914').backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+            .onClick((): void => { this.homeOptions = true; })
+          Text(this.visibleNotes().length.toString()).fontSize(15).fontColor(this.dark ? '#A4AFA1' : '#677166')
+        }
       }.width('100%').padding({ left: 18, right: 18, top: 18, bottom: 12 })
       TextInput({ placeholder: '搜索笔记', text: this.search })
         .fontColor(this.dark ? '#D8DED4' : '#141914')
@@ -650,21 +773,48 @@ struct Index {
         .backgroundColor(this.dark ? '#252B24' : '#E9EDE7')
         .onChange((value: string): void => { this.search = value; })
         .margin({ left: 16, right: 16, bottom: 12 })
-      List({ space: 10 }) {
+      WaterFlow({ scroller: this.listScroller }) {
         ForEach(this.visibleNotes(), (note: NativeNote) => {
-          ListItem() {
+          FlowItem() {
             Column({ space: 9 }) {
-              Text(note.title).fontSize(18).fontWeight(FontWeight.Medium).fontColor(this.dark ? '#D8DED4' : '#141914')
-                .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+              Row() {
+                Text(note.title).fontSize(18).fontWeight(FontWeight.Medium).fontColor(this.dark ? '#D8DED4' : '#141914')
+                  .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+                if (this.selectionMode) {
+                  Text(this.selectedIds.includes(note.id) ? '✓' : '○').fontSize(21)
+                    .fontColor(this.selectedIds.includes(note.id) ? '#54D81B' : (this.dark ? '#A4AFA1' : '#677166'))
+                }
+              }.width('100%')
               Text(this.preview(note)).fontSize(14).fontColor(this.dark ? '#A4AFA1' : '#677166').maxLines(4)
                 .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
-              Text(note.kind === 'mindmap' ? '灵感笔记' : '笔记').fontSize(12).fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%')
             }
-            .padding(18).width('100%').backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(20)
-            .onClick((): void => this.open(note))
+            .padding(18).width('100%')
+            .backgroundColor(this.selectedIds.includes(note.id) ? (this.dark ? '#34562C' : '#E6F8DF') : (this.dark ? '#252B24' : '#FFFFFF'))
+            .borderRadius(20)
+            .onClick((): void => {
+              if (this.suppressSelectionClick === note.id) { this.suppressSelectionClick = ''; return; }
+              if (this.selectionMode) this.toggleSelection(note.id);
+              else this.open(note);
+            })
+            .gesture(LongPressGesture().onAction((): void => {
+              this.suppressSelectionClick = note.id;
+              this.toggleSelection(note.id);
+            }))
           }
         }, (note: NativeNote): string => note.id)
-      }.lanes(this.tablet || this.listLayout ? 1 : 2).layoutWeight(1).padding({ left: 14, right: 14 })
+      }.columnsTemplate(this.tablet || this.listLayout ? '1fr' : '1fr 1fr').columnsGap(10).rowsGap(10)
+        .layoutWeight(1).padding({ left: 14, right: 14 })
+      if (this.selectionMode) {
+        Row({ space: 10 }) {
+          Button('▱  移动到').layoutWeight(1).fontColor(this.dark ? '#D8DED4' : '#141914')
+            .backgroundColor(this.dark ? '#303830' : '#F0F0F0').borderRadius(17)
+            .onClick((): void => { this.batchMoveOpen = true; })
+          Button('♲  删除').layoutWeight(1).fontColor('#B84848')
+            .backgroundColor(this.dark ? '#303830' : '#F0F0F0').borderRadius(17)
+            .onClick((): void => { this.batchDeleteOpen = true; })
+        }.padding(8).backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(24)
+          .margin({ left: 22, right: 22, bottom: 16 })
+      } else {
       Row({ space: 10 }) {
         Button('＋ 笔记').width(this.tablet ? 90 : 120).fontColor('#141914').backgroundColor('#E6F8DF')
           .onClick((): void => this.createNote('richtext'))
@@ -674,6 +824,7 @@ struct Index {
           .onClick((): void => this.createNote('mindmap'))
       }.padding(6).backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
         .borderRadius(36).alignSelf(ItemAlign.Center).margin({ bottom: 16 })
+      }
     }.width(this.tablet ? 270 : '100%').height('100%').backgroundColor(this.dark ? '#171B16' : '#F5F7F2')
   }
 
@@ -731,13 +882,10 @@ struct Index {
                     .backgroundColor(node.depth === 0 ? (this.dark ? '#34562C' : '#E6F8DF') : (this.dark ? '#252B24' : '#FFFFFF'))
                     .borderRadius(16).position({ x: node.x, y: node.y })
                     .onClick((): void => {
+                      this.selectedBranchId = node.id;
                       if (node.depth === 0) return;
                       this.editingTreeId = node.id; this.editingTreeText = node.text;
                     })
-                    .gesture(LongPressGesture().onAction((): void => { if (node.depth > 0) this.branchOptionsId = node.id; }))
-                  Button('＋').type(ButtonType.Normal).fontSize(18).width(30).height(30).fontColor(this.dark ? '#D8DED4' : '#141914')
-                    .backgroundColor(this.dark ? '#34562C' : '#E6F8DF').borderRadius(14)
-                    .position({ x: node.x + 174, y: node.y + 11 }).onClick((): void => this.addBranch(node.id))
                 }
               }, (node: TreePoint): string => node.id)
             }.width(this.treeWidth).height(this.treeHeight)
@@ -747,23 +895,25 @@ struct Index {
             Column({ space: 8 }) {
               ForEach(this.rows, (row: BranchRow) => {
               Row({ space: 4 }) {
-                Text(this.treeMode ? '├' : '•').fontColor('#54D81B')
+                Text('•').fontColor('#54D81B')
                 TextInput({ text: row.text }).fontSize(16).fontColor(this.dark ? '#D8DED4' : '#141914').width(0).layoutWeight(1)
-                  .backgroundColor(this.treeMode ? (this.dark ? '#252B24' : '#FFFFFF') : (this.dark ? '#171B16' : '#F5F7F2'))
+                  .backgroundColor(this.selectedBranchId === row.id ? (this.dark ? '#34562C' : '#E6F8DF') : (this.dark ? '#171B16' : '#F5F7F2'))
+                  .onFocus((): void => { this.selectedBranchId = row.id; })
                   .onChange((value: string): void => this.editBranch(row.id, value))
-                Button('＋').type(ButtonType.Normal).fontColor(this.dark ? '#D8DED4' : '#141914').backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
-                  .onClick((): void => this.addBranch(row.id))
-                Button('⋯').type(ButtonType.Normal).fontColor(this.dark ? '#D8DED4' : '#141914')
-                  .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
-                  .onClick((): void => { this.branchOptionsId = row.id; })
               }.width(this.tablet ? 720 : '100%').padding({ left: row.depth * 18, right: 8 })
               }, (row: BranchRow): string => row.id)
-              Button('＋ 添加分支').fontColor('#141914').backgroundColor('#54D81B')
-                .onClick((): void => this.addBranch())
             }.width('100%').constraintSize({ minHeight: '100%' }).padding(18)
               .justifyContent(FlexAlign.Start).alignItems(HorizontalAlign.Start)
           }.layoutWeight(1)
         }
+        Row() {
+          this.mindTool('升级', '↖', 'shallower')
+          this.mindTool('降级', '↘', 'deeper')
+          this.mindTool('子主题', '+', 'child')
+          this.mindTool('同级', '↳', 'sibling')
+          this.mindTool('更多', '···', 'more')
+        }.width('100%').padding({ left: 8, right: 8, top: 5, bottom: 5 })
+          .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
       } else {
         RichEditor(this.richOptions)
           .placeholder('开始记录…')
@@ -801,6 +951,24 @@ struct Index {
     }.width(0).layoutWeight(1).height('100%').backgroundColor(this.dark ? '#171B16' : '#F5F7F2')
   }
 
+  @Builder private mindTool(label: string, symbol: string, action: string): void {
+    Button() {
+      Column({ space: 2 }) {
+        Text(symbol).fontSize(21)
+        Text(label).fontSize(12)
+      }
+    }.type(ButtonType.Normal).layoutWeight(1).height(52)
+      .fontColor(this.dark ? '#D8DED4' : '#141914')
+      .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+      .onClick((): void => {
+        if (action === 'child') this.addBranch(this.selectedBranchId);
+        else if (action === 'sibling') this.addSibling();
+        else if (action === 'deeper') this.moveBranch(this.selectedBranchId, true);
+        else if (action === 'shallower') this.moveBranch(this.selectedBranchId, false);
+        else if (action === 'more' && this.selectedBranchId !== this.mindRoot().id) this.branchOptionsId = this.selectedBranchId;
+      })
+  }
+
   @Builder private optionsSheet(): void {
     Column({ space: 8 }) {
       Text(this.movingGroup ? '移动到' : '笔记选项').fontSize(23).fontWeight(FontWeight.Bold)
@@ -813,18 +981,10 @@ struct Index {
             .backgroundColor(this.dark ? '#303830' : '#F4F6F2').borderRadius(16).onClick((): void => this.moveCurrent(group.id))
         }, (group: NoteGroup): string => group.id)
       } else {
-        Button('移动到分组').width('100%').fontColor(this.dark ? '#D8DED4' : '#141914')
-          .backgroundColor(this.dark ? '#303830' : '#F4F6F2').borderRadius(16)
-          .onClick((): void => { this.movingGroup = true; })
-        Button('导出纯文本').width('100%').fontColor(this.dark ? '#D8DED4' : '#141914')
-          .backgroundColor(this.dark ? '#303830' : '#F4F6F2').borderRadius(16)
-          .onClick((): void => { this.noteOptions = false; this.exportTextFile(); })
-        Button(this.privateOpen ? '移出隐私笔记' : '移入隐私笔记')
-          .width('100%').fontColor(this.dark ? '#D8DED4' : '#141914')
-          .backgroundColor(this.dark ? '#303830' : '#F4F6F2').borderRadius(16)
-          .onClick((): void => { this.noteOptions = false; this.changePrivacy(); })
-        Button('删除笔记').width('100%').fontColor('#B84848')
-          .backgroundColor(this.dark ? '#303830' : '#F4F6F2').borderRadius(16).onClick((): void => this.deleteCurrent())
+        this.noteOption('移动到分组', $rawfile('nav_folder.svg'), 'move')
+        this.noteOption('导出纯文本', $rawfile('nav_archive.svg'), 'export')
+        this.noteOption(this.privateOpen ? '移出隐私笔记' : '移入隐私笔记', $rawfile('nav_lock.svg'), 'privacy')
+        this.noteOption('删除笔记', $rawfile('nav_archive.svg'), 'delete')
       }
       Button('取消').width('100%').fontColor(this.dark ? '#A4AFA1' : '#677166')
         .backgroundColor(this.dark ? '#303830' : '#F4F6F2').borderRadius(16)
@@ -834,15 +994,27 @@ struct Index {
       .alignSelf(ItemAlign.Center).margin({ bottom: 16 })
   }
 
+  @Builder private noteOption(label: string, icon: ResourceStr, action: string): void {
+    Button() {
+      Row({ space: 12 }) {
+        Image(icon).width(20).height(20)
+        Text(label).fontSize(17).fontColor(action === 'delete' ? '#B84848' : (this.dark ? '#D8DED4' : '#141914'))
+      }.width('100%')
+    }.type(ButtonType.Normal).width('100%').backgroundColor(this.dark ? '#303830' : '#F4F6F2')
+      .borderRadius(16).onClick((): void => {
+        if (action === 'move') this.movingGroup = true;
+        else if (action === 'export') { this.noteOptions = false; this.exportTextFile(); }
+        else if (action === 'privacy') { this.noteOptions = false; this.changePrivacy(); }
+        else if (action === 'delete') this.deleteCurrent();
+      })
+  }
+
   @Builder private branchSheet(): void {
     Column({ space: 8 }) {
       Text('分支操作').fontSize(23).fontWeight(FontWeight.Bold)
         .fontColor(this.dark ? '#D8DED4' : '#141914').width('100%').padding({ bottom: 12 })
-      this.branchSheetItem('添加子分支', 'add')
       this.branchSheetItem('上移', 'up')
       this.branchSheetItem('下移', 'down')
-      this.branchSheetItem('增加层级', 'deeper')
-      this.branchSheetItem('减少层级', 'shallower')
       this.branchSheetItem('删除分支', 'delete')
       Button('取消').width('100%').fontColor(this.dark ? '#A4AFA1' : '#677166')
         .backgroundColor(this.dark ? '#303830' : '#F4F6F2').borderRadius(16)
@@ -869,16 +1041,33 @@ struct Index {
       Scroll() {
         Column({ space: 12 }) {
           if (this.settingsAbout) {
-            Text('拾页 · Native\n给想法，留一页空白。\nby OpenALC').fontSize(21).lineHeight(31)
-              .fontColor(this.dark ? '#D8DED4' : '#141914').width('100%').padding(20)
+            Column({ space: 7 }) {
+              Text('拾页 · Native').fontSize(25).fontWeight(FontWeight.Bold)
+                .fontColor(this.dark ? '#D8DED4' : '#141914')
+              Text('给想法，留一页空白。').fontSize(15).fontColor(this.dark ? '#A4AFA1' : '#677166')
+              Text('by OpenALC').fontSize(12).fontColor(this.dark ? '#A4AFA1' : '#677166')
+            }.width('100%').padding({ top: 24, bottom: 30 })
+            Text('应用信息').fontSize(14).fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%')
+            Text('当前版本                                      v0.1.0').fontSize(16)
+              .fontColor(this.dark ? '#D8DED4' : '#141914').width('100%').padding(18)
               .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
-            Text('当前版本  v0.1.0\nGitHub 仓库  github.com/OpenALC/insp\n开源协议  MIT')
-              .fontSize(16).lineHeight(34).fontColor(this.dark ? '#D8DED4' : '#141914')
-              .width('100%').padding(20).backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
+            Text('获取更新   ›').fontSize(16)
+              .fontColor(this.dark ? '#D8DED4' : '#141914').width('100%').padding(18)
+              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
+              .onClick((): void => this.openLink('https://github.com/OpenALC/insp-native/releases'))
+            Text('GitHub 仓库   OpenALC/insp-native  ›').fontSize(16)
+              .fontColor(this.dark ? '#D8DED4' : '#141914').width('100%').padding(18)
+              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
+              .onClick((): void => this.openLink('https://github.com/OpenALC/insp-native'))
+            Text('开源协议   MIT  ›').fontSize(16)
+              .fontColor(this.dark ? '#D8DED4' : '#141914').width('100%').padding(18)
+              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
+              .onClick((): void => this.openLink('https://github.com/OpenALC/insp-native/blob/main/LICENSE'))
           } else {
             Text('外观').fontSize(14).fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%')
             Row() {
-              Text('暗色模式').fontSize(17).fontColor(this.dark ? '#D8DED4' : '#141914')
+              Image($rawfile('nav_settings.svg')).width(20).height(20)
+              Text('外观').fontSize(17).fontColor(this.dark ? '#D8DED4' : '#141914').layoutWeight(1)
               Toggle({ type: ToggleType.Switch, isOn: this.dark }).selectedColor('#54D81B')
                 .width(54).onChange((value: boolean): void => {
                   this.dark = value; this.syncSystemBars();
@@ -887,7 +1076,8 @@ struct Index {
             }.justifyContent(FlexAlign.SpaceBetween).padding(18).width('100%')
               .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
             Row() {
-              Text('笔记布局').fontSize(17).fontColor(this.dark ? '#D8DED4' : '#141914')
+              Image($rawfile('nav_folder.svg')).width(20).height(20)
+              Text('笔记布局').fontSize(17).fontColor(this.dark ? '#D8DED4' : '#141914').layoutWeight(1)
               Text(this.listLayout ? '列表' : '宫格').fontSize(15).fontColor(this.dark ? '#A4AFA1' : '#677166')
             }.justifyContent(FlexAlign.SpaceBetween).padding(18).width('100%')
               .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
@@ -896,21 +1086,30 @@ struct Index {
                 if (this.store !== null) { this.store.listLayout = this.listLayout; this.store.saveNormal(); }
               })
             Text('安全与隐私').fontSize(14).fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%')
-            Text('普通笔记    直接打开 · 本地加密').fontSize(16)
-              .fontColor(this.dark ? '#D8DED4' : '#141914').padding(18).width('100%')
-              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
-            Text('隐私笔记    系统身份验证').fontSize(16)
-              .fontColor(this.dark ? '#D8DED4' : '#141914').padding(18).width('100%')
-              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
+            Row({ space: 12 }) {
+              Image($rawfile('nav_inbox.svg')).width(20).height(20)
+              Text('普通笔记').fontSize(16).fontColor(this.dark ? '#D8DED4' : '#141914').layoutWeight(1)
+              Text('直接打开 · 本地加密').fontSize(12).fontColor(this.dark ? '#A4AFA1' : '#677166')
+            }.padding(18).width('100%').backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
+            Row({ space: 12 }) {
+              Image($rawfile('nav_lock.svg')).width(20).height(20)
+              Text('隐私笔记').fontSize(16).fontColor(this.dark ? '#D8DED4' : '#141914').layoutWeight(1)
+              Text('支持系统验证').fontSize(12).fontColor(this.dark ? '#A4AFA1' : '#677166')
+            }.padding(18).width('100%').backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
               .onClick((): void => { this.settings = false; this.enterPrivate(); })
             Text('数据').fontSize(14).fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%')
-            Text('导入笔记    Markdown · 纯文本').fontSize(16)
-              .fontColor(this.dark ? '#D8DED4' : '#141914').padding(18).width('100%')
-              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
+            Row({ space: 12 }) {
+              Image($rawfile('nav_archive.svg')).width(20).height(20)
+              Text('导入笔记').fontSize(16).fontColor(this.dark ? '#D8DED4' : '#141914').layoutWeight(1)
+              Text('›').fontSize(19).fontColor(this.dark ? '#A4AFA1' : '#677166')
+            }.padding(18).width('100%').backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
               .onClick((): void => { this.importTextFile(); })
             Text('其他').fontSize(14).fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%')
-            Text('关于拾页    ›').fontSize(16).fontColor(this.dark ? '#D8DED4' : '#141914')
-              .padding(18).width('100%').backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+            Row({ space: 12 }) {
+              Image($rawfile('nav_settings.svg')).width(20).height(20)
+              Text('关于拾页').fontSize(16).fontColor(this.dark ? '#D8DED4' : '#141914').layoutWeight(1)
+              Text('›').fontSize(19).fontColor(this.dark ? '#A4AFA1' : '#677166')
+            }.padding(18).width('100%').backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
               .borderRadius(18).onClick((): void => { this.settingsAbout = true; })
             Text('拾页 · Native\n给想法，留一页空白。\nOpenALC · MIT').fontSize(15).lineHeight(25)
               .fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%').padding(18)
@@ -947,10 +1146,67 @@ struct Index {
           this.optionsSheet()
         }.width('100%').height('100%').backgroundColor('#66000000')
       }
+      if (this.homeOptions) {
+        Column() {
+          Blank().layoutWeight(1).onClick((): void => { this.homeOptions = false; })
+          Column({ space: 8 }) {
+            Text('更多').fontSize(23).fontWeight(FontWeight.Bold)
+              .fontColor(this.dark ? '#D8DED4' : '#141914').width('100%').padding({ bottom: 12 })
+            Button() {
+              Row({ space: 12 }) {
+                Image($rawfile('nav_plus.svg')).width(20).height(20)
+                Text('新建分组').fontSize(17).fontColor(this.dark ? '#D8DED4' : '#141914')
+              }.width('100%')
+            }.type(ButtonType.Normal).width('100%').backgroundColor(this.dark ? '#303830' : '#F4F6F2')
+              .borderRadius(16).onClick((): void => { this.homeOptions = false; this.drawer = true; this.addingGroup = true; })
+            Button() {
+              Row({ space: 12 }) {
+                Image($rawfile('nav_lock.svg')).width(20).height(20)
+                Text('隐私笔记').fontSize(17).fontColor(this.dark ? '#D8DED4' : '#141914')
+              }.width('100%')
+            }.type(ButtonType.Normal).width('100%').backgroundColor(this.dark ? '#303830' : '#F4F6F2')
+              .borderRadius(16).onClick((): void => { this.homeOptions = false; this.enterPrivate(); })
+            Button('取消').width('100%').fontColor(this.dark ? '#A4AFA1' : '#677166')
+              .backgroundColor(this.dark ? '#303830' : '#F4F6F2').borderRadius(16)
+              .onClick((): void => { this.homeOptions = false; })
+          }.width(this.tablet ? 480 : '100%').padding(20).borderRadius(28)
+            .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+            .alignSelf(ItemAlign.Center).margin({ bottom: 16 })
+        }.width('100%').height('100%').backgroundColor('#66000000')
+      }
       if (this.branchOptionsId !== '') {
         Column() {
           Blank().layoutWeight(1).onClick((): void => { this.branchOptionsId = ''; })
           this.branchSheet()
+        }.width('100%').height('100%').backgroundColor('#66000000')
+      }
+      if (this.batchMoveOpen || this.batchDeleteOpen) {
+        Column() {
+          Blank().layoutWeight(1).onClick((): void => { this.batchMoveOpen = false; this.batchDeleteOpen = false; })
+          Column({ space: 8 }) {
+            Text(this.batchDeleteOpen ? `删除 ${this.selectedIds.length} 篇笔记？` : '移动到')
+              .fontSize(23).fontWeight(FontWeight.Bold).fontColor(this.dark ? '#D8DED4' : '#141914')
+              .width('100%').padding({ bottom: 12 })
+            if (this.batchMoveOpen) {
+              Button('未分组').width('100%').fontColor(this.dark ? '#D8DED4' : '#141914')
+                .backgroundColor(this.dark ? '#303830' : '#F4F6F2').borderRadius(16)
+                .onClick((): void => this.moveSelected(null))
+              ForEach(this.groups, (group: NoteGroup) => {
+                Button(group.name).width('100%').fontColor(this.dark ? '#D8DED4' : '#141914')
+                  .backgroundColor(this.dark ? '#303830' : '#F4F6F2').borderRadius(16)
+                  .onClick((): void => this.moveSelected(group.id))
+              }, (group: NoteGroup): string => group.id)
+            } else {
+              Button('删除笔记').width('100%').fontColor('#B84848')
+                .backgroundColor(this.dark ? '#303830' : '#F4F6F2').borderRadius(16)
+                .onClick((): void => this.deleteSelected())
+            }
+            Button('取消').width('100%').fontColor(this.dark ? '#A4AFA1' : '#677166')
+              .backgroundColor(this.dark ? '#303830' : '#F4F6F2').borderRadius(16)
+              .onClick((): void => { this.batchMoveOpen = false; this.batchDeleteOpen = false; })
+          }.width(this.tablet ? 480 : '100%').padding(20).borderRadius(28)
+            .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+            .alignSelf(ItemAlign.Center).margin({ bottom: 16 })
         }.width('100%').height('100%').backgroundColor('#66000000')
       }
     }.width('100%').height('100%').backgroundColor(this.dark ? '#171B16' : '#F5F7F2')

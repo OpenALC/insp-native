@@ -15,6 +15,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.Drawable
+import android.graphics.drawable.RippleDrawable
 import android.hardware.biometrics.BiometricManager
 import android.hardware.biometrics.BiometricPrompt
 import android.os.Bundle
@@ -79,12 +80,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var home: LinearLayout
     private lateinit var editor: LinearLayout
     private lateinit var cards: RecyclerView
+    private lateinit var searchInput: EditText
     private lateinit var filters: LinearLayout
     private lateinit var cardAdapter: Cards
     private var tabletSidebar: LinearLayout? = null
     private var tabletPlaceholder: TextView? = null
     private lateinit var headerTitle: TextView
     private lateinit var headerAction: TextView
+    private lateinit var headerLayoutAction: TextView
+    private lateinit var headerLayoutButton: FrameLayout
+    private lateinit var headerLayoutIcon: NativeIcon
+    private lateinit var headerMoreIcon: NativeIcon
     private lateinit var composeBar: LinearLayout
     private lateinit var composeNoteButton: TextView
     private lateinit var composeMindButton: TextView
@@ -98,6 +104,7 @@ class MainActivity : AppCompatActivity() {
     private var selectionMode = false
     private var drawerOverlay: FrameLayout? = null
     private var settingsOverlay: LinearLayout? = null
+    private var aboutOpen = false
     private var selectedCard: View? = null
     private var active: NativeNote? = null
     private var bodyInput: EditText? = null
@@ -179,9 +186,10 @@ class MainActivity : AppCompatActivity() {
                 when {
                     settingsOverlay != null -> closeSettings()
                     drawerOverlay != null -> closeDrawer()
+                    selectionMode -> clearSelection()
                     editor.visibility == View.VISIBLE -> closeEditor()
                     privateArea -> leavePrivate()
-                    else -> { isEnabled = false; onBackPressedDispatcher.onBackPressed() }
+                    else -> finish()
                 }
             }
         })
@@ -195,16 +203,33 @@ class MainActivity : AppCompatActivity() {
     private fun buildHome(): LinearLayout {
         val page = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(this@MainActivity.background) }
         val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(18), dp(12), dp(18), dp(8)) }
-        if (!wideTablet) header.addView(action("☰") { openDrawer() }, LinearLayout.LayoutParams(dp(48), dp(48)))
+        if (!wideTablet) header.addView(iconButton("menu") { openDrawer() }, LinearLayout.LayoutParams(dp(48), dp(48)))
         headerTitle = TextView(this).apply {
             text = "笔记"; textSize = 29f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink)
             setPadding(dp(10), 0, 0, 0)
         }
         header.addView(headerTitle, LinearLayout.LayoutParams(0, -2, 1f))
-        headerAction = action("⋯") { if (selectionMode) clearSelection() else listOptions() }
-        header.addView(headerAction, LinearLayout.LayoutParams(dp(48), dp(48)))
+        headerLayoutButton = FrameLayout(this).apply { tapFeedback(); setOnClickListener {
+            if (selectionMode) {
+                val visible = allNotes.filter { (groupId == null || if (groupId == "") it.groupId == null else it.groupId == groupId) &&
+                    (search.isBlank() || it.title.contains(search, true) || preview(it).contains(search, true)) }
+                if (selectedIds.size == visible.size) clearSelection()
+                else { selectedIds.addAll(visible.map { it.id }); updateSelection(); cardAdapter.selectionChangedAll() }
+            } else setListLayout(!listLayout)
+        } }
+        headerLayoutAction = TextView(this).apply { text = "全选"; textSize = 13f; setTextColor(ink); gravity = Gravity.CENTER; visibility = View.GONE }
+        headerLayoutIcon = NativeIcon(this, if (listLayout) "grid" else "list", ink)
+        headerLayoutButton.addView(headerLayoutAction, FrameLayout.LayoutParams(-1, -1))
+        headerLayoutButton.addView(headerLayoutIcon, FrameLayout.LayoutParams(dp(23), dp(23), Gravity.CENTER))
+        header.addView(headerLayoutButton, LinearLayout.LayoutParams(dp(48), dp(48)))
+        val moreButton = FrameLayout(this).apply { tapFeedback(); setOnClickListener { if (selectionMode) clearSelection() else listOptions() } }
+        headerAction = TextView(this).apply { text = "取消"; textSize = 13f; setTextColor(ink); gravity = Gravity.CENTER; visibility = View.GONE }
+        headerMoreIcon = NativeIcon(this, "more", ink)
+        moreButton.addView(headerAction, FrameLayout.LayoutParams(-1, -1))
+        moreButton.addView(headerMoreIcon, FrameLayout.LayoutParams(dp(23), dp(23), Gravity.CENTER))
+        header.addView(moreButton, LinearLayout.LayoutParams(dp(48), dp(48)))
         page.addView(header)
-        val searchInput = EditText(this).apply {
+        searchInput = EditText(this).apply {
             hint = "搜索笔记"; textSize = 15f; setSingleLine(true); setTextColor(ink); setHintTextColor(secondary)
             background = rounded(if (dark) 0xff30342e.toInt() else 0xffebeeea.toInt(), 17)
             setPadding(dp(18), 0, dp(18), 0)
@@ -261,10 +286,13 @@ class MainActivity : AppCompatActivity() {
         composeBar.addView(View(this).apply { setBackgroundColor(secondary) }, LinearLayout.LayoutParams(dp(1), dp(22)).apply { leftMargin = dp(5); rightMargin = dp(5) })
         composeBar.addView(composeMindButton, LinearLayout.LayoutParams(expanded, dp(48)))
         page.addView(composeBar, LinearLayout.LayoutParams(-2, dp(60)).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(18) })
-        selectionBar = LinearLayout(this).apply { gravity = Gravity.CENTER; setPadding(dp(10), dp(8), dp(10), dp(10)); visibility = View.GONE }
-        selectionBar.addView(pill("移动到") { moveSelected() }, LinearLayout.LayoutParams(0, dp(54), 1f))
-        selectionBar.addView(pill("删除") { deleteSelected() }, LinearLayout.LayoutParams(0, dp(54), 1f).apply { leftMargin = dp(8) })
-        page.addView(selectionBar)
+        selectionBar = LinearLayout(this).apply {
+            gravity = Gravity.CENTER; setPadding(dp(8), dp(8), dp(8), dp(8)); visibility = View.GONE
+            background = rounded(paper, 24); elevation = dp(8).toFloat()
+        }
+        selectionBar.addView(selectionAction("移动到", "folder", ink) { moveSelected() }, LinearLayout.LayoutParams(0, dp(48), 1f))
+        selectionBar.addView(selectionAction("删除", "trash", 0xffbb4848.toInt()) { deleteSelected() }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { leftMargin = dp(8) })
+        page.addView(selectionBar, LinearLayout.LayoutParams(-1, dp(64)).apply { setMargins(dp(22), 0, dp(22), dp(18)) })
         return page
     }
 
@@ -280,15 +308,18 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateSelection() {
         headerTitle.text = "已选 ${selectedIds.size} 项"
-        headerAction.text = "取消"
-        headerAction.textSize = 15f
+        headerLayoutAction.text = if (selectedIds.size == cardAdapter.itemCount) "取消" else "全选"
+        headerLayoutAction.visibility = View.VISIBLE; headerLayoutIcon.visibility = View.GONE
+        headerAction.visibility = View.VISIBLE; headerMoreIcon.visibility = View.GONE
         composeBar.visibility = View.GONE
         selectionBar.visibility = View.VISIBLE
     }
 
     private fun clearSelection() {
         selectedIds.clear(); selectionMode = false
-        headerTitle.text = "笔记"; headerAction.text = "⋯"; headerAction.textSize = 22f
+        headerTitle.text = "笔记"
+        headerLayoutAction.visibility = View.GONE; headerLayoutIcon.visibility = View.VISIBLE
+        headerAction.visibility = View.GONE; headerMoreIcon.visibility = View.VISIBLE
         composeBar.visibility = View.VISIBLE; selectionBar.visibility = View.GONE
         setComposeCompact(false)
         cardAdapter.selectionChangedAll()
@@ -320,9 +351,17 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun selectionAction(label: String, icon: String, color: Int, click: () -> Unit) = LinearLayout(this).apply {
+        gravity = Gravity.CENTER; background = rounded(if (dark) 0xff30342e.toInt() else 0xfff0f0f0.toInt(), 17)
+        tapFeedback(); setOnClickListener { click() }
+        addView(NativeIcon(this@MainActivity, icon, color), LinearLayout.LayoutParams(dp(20), dp(20)))
+        addView(TextView(this@MainActivity).apply { text = label; textSize = 15f; setTextColor(color) },
+            LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8) })
+    }
+
     private fun switchGroup(step: Int) {
         if (privateArea || selectionMode) return
-        val ids = listOf<String?>(null) + allGroups.map { it.id }
+        val ids = listOf<String?>(null, "") + allGroups.map { it.id }
         val next = (ids.indexOf(groupId) + step).coerceIn(0, ids.lastIndex)
         if (ids[next] == groupId) return
         groupId = ids[next]
@@ -334,20 +373,18 @@ class MainActivity : AppCompatActivity() {
 
     private fun moveSelected() {
         val names = listOf("未分组") + allGroups.map { it.name }
-        MaterialAlertDialogBuilder(this).setTitle("移动到").setItems(names.toTypedArray()) { _, index ->
+        showSheet("移动到", names.toTypedArray()) { index ->
             val destination = if (index == 0) null else allGroups[index - 1].id
             val notes = allNotes.filter { it.id in selectedIds }.map { it.copy(groupId = destination) }
             io.execute { notes.forEach(store::save); runOnUiThread { clearSelection(); refresh() } }
-        }.show()
+        }
     }
 
     private fun deleteSelected() {
-        MaterialAlertDialogBuilder(this).setTitle("删除 ${selectedIds.size} 篇笔记？")
-            .setNegativeButton("取消", null)
-            .setPositiveButton("删除") { _, _ ->
-                val ids = selectedIds.toList()
-                io.execute { ids.forEach(store::delete); runOnUiThread { clearSelection(); refresh() } }
-            }.show()
+        showSheet("删除 ${selectedIds.size} 篇笔记？", arrayOf("删除笔记")) {
+            val ids = selectedIds.toList()
+            io.execute { ids.forEach(store::delete); runOnUiThread { clearSelection(); refresh() } }
+        }
     }
 
     private fun refresh() {
@@ -367,7 +404,8 @@ class MainActivity : AppCompatActivity() {
     private fun renderFilters() {
         filters.removeAllViews()
         val choices = listOf(null to if (privateArea) "隐私笔记" else "全部") +
-            if (privateArea) emptyList() else allGroups.map { it.id to it.name }
+            (if (privateArea) emptyList() else listOf("" to "未分组")) +
+            (if (privateArea) emptyList() else allGroups.map { it.id to it.name })
         for ((id, label) in choices) {
             filters.addView(TextView(this).apply {
                 text = label; textSize = 15f; setTextColor(ink); gravity = Gravity.CENTER
@@ -379,9 +417,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderCards() {
-        val notes = allNotes.filter { (groupId == null || it.groupId == groupId) &&
+        val notes = allNotes.filter { (groupId == null || if (groupId == "") it.groupId == null else it.groupId == groupId) &&
             (search.isBlank() || it.title.contains(search, true) || preview(it).contains(search, true)) }
         cardAdapter.submit(notes)
+    }
+
+    private fun setListLayout(value: Boolean) {
+        listLayout = value
+        getSharedPreferences("appearance", Context.MODE_PRIVATE).edit().putBoolean("list_layout", value).apply()
+        cards.layoutManager = StaggeredGridLayoutManager(if (tablet || value) 1 else 2, StaggeredGridLayoutManager.VERTICAL)
+        headerLayoutButton.removeView(headerLayoutIcon)
+        headerLayoutIcon = NativeIcon(this, if (value) "grid" else "list", ink)
+        headerLayoutButton.addView(headerLayoutIcon, FrameLayout.LayoutParams(dp(23), dp(23), Gravity.CENTER))
     }
 
     private fun preview(note: NativeNote): String = if (note.kind == "mindmap") {
@@ -391,8 +438,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun create(kind: String) {
         io.execute {
-            val note = store.create(kind, groupId, privateArea)
-            runOnUiThread { allNotes = listOf(note) + allNotes; renderCards(); openNote(note, null) }
+            val note = store.create(kind, groupId?.takeIf { it.isNotEmpty() }, privateArea)
+            runOnUiThread { allNotes = listOf(note) + allNotes; searchInput.setText(""); renderCards(); cards.scrollToPosition(0); openNote(note, null) }
         }
     }
 
@@ -783,24 +830,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun noteOptions(note: NativeNote) {
-        val items = arrayOf("分享与导出", "复制纯文本", "移动到分组", if (note.private) "移出隐私笔记" else "移入隐私笔记", "删除笔记")
+        val items = arrayOf("移动到", "隐私", "分享与导出", "删除笔记")
         showSheet("笔记选项", items) { index -> when (index) {
-            0 -> shareOptions(note)
-            1 -> {
-                (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText(note.title, contentText(note)))
-                toast("已复制")
+            0 -> groupPicker(note)
+            1 -> privacyOptions(note)
+            2 -> shareOptions(note)
+            3 -> showSheet("删除这篇笔记？", arrayOf("删除笔记")) {
+                io.execute { store.delete(note.id); runOnUiThread { closeEditor() } }
             }
-            2 -> groupPicker(note)
-            3 -> authenticate {
-                persistNow()
-                io.execute {
-                    store.setPrivacy(note, !note.private)
-                    runOnUiThread { closeEditor(); leavePrivate() }
-                }
-            }
-            4 -> MaterialAlertDialogBuilder(this).setTitle("删除这篇笔记？").setNegativeButton("取消", null)
-                .setPositiveButton("删除") { _, _ -> io.execute { store.delete(note.id); runOnUiThread { closeEditor() } } }.show()
         } }
+    }
+
+    private fun privacyOptions(note: NativeNote) {
+        showSheet("隐私设置", arrayOf("普通笔记", "隐私笔记"), if (note.private) 1 else 0) { choice ->
+            val next = choice == 1
+            if (next != note.private) authenticate {
+                persistNow()
+                io.execute { store.setPrivacy(note, next); runOnUiThread { closeEditor(); leavePrivate() } }
+            }
+        }
     }
 
     private fun contentText(note: NativeNote) = NativeExport.plain(note)
@@ -871,15 +919,35 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun listOptions() {
-        showSheet("笔记操作", arrayOf("新建分组", "进入隐私笔记", "导入笔记", "关于拾页 Native")) { index -> when (index) {
+        showSheet("笔记操作", arrayOf("新建分组", "隐私笔记")) { index -> when (index) {
             0 -> groupDialog()
             1 -> enterPrivate()
-            2 -> pickTransfer()
-            3 -> MaterialAlertDialogBuilder(this).setTitle("拾页 Native").setMessage("OpenALC · MIT License\nAndroid 原生单机版 0.1.0").setPositiveButton("完成", null).show()
         } }
     }
 
-    fun showSheet(title: String, items: Array<String>, selected: (Int) -> Unit) {
+    private fun iconFor(label: String) = when {
+        label.contains("删除") -> "trash"
+        label.contains("隐私") -> "lock"
+        label.contains("分组") || label.contains("移动") -> "folder"
+        label.contains("图片") -> "image"
+        label.contains("导出") || label.contains("下载") || label.contains("导入") || label.contains("更新") -> "download"
+        label.contains("分享") -> "share"
+        label.contains("复制") -> "document"
+        label.contains("主题") || label.contains("外观") -> "palette"
+        label.contains("版本") || label.contains("关于") -> "info"
+        label.contains("协议") -> "shield"
+        label.contains("布局") -> "grid"
+        label.contains("设置") -> "settings"
+        label.contains("笔记") -> "inbox"
+        else -> "document"
+    }
+
+    private fun View.tapFeedback() {
+        foreground = RippleDrawable(ColorStateList.valueOf(if (dark) 0x6654d81b else 0x4454d81b), null,
+            GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.WHITE) })
+    }
+
+    fun showSheet(title: String, items: Array<String>, selectedIndex: Int = -1, selected: (Int) -> Unit) {
         window.insetsController?.hide(WindowInsets.Type.ime())
         val sheet = BottomSheetDialog(this)
         val content = LinearLayout(this).apply {
@@ -892,12 +960,18 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(12), dp(12), dp(12), dp(14))
         })
         items.forEachIndexed { index, label ->
-            content.addView(TextView(this).apply {
-                text = label; textSize = 16f; setTextColor(if (label.startsWith("删除")) 0xffbb4848.toInt() else ink)
-                gravity = Gravity.CENTER_VERTICAL; setPadding(dp(18), 0, dp(18), 0)
+            val row = LinearLayout(this).apply {
+                gravity = Gravity.CENTER_VERTICAL; setPadding(dp(17), 0, dp(17), 0)
                 background = rounded(if (dark) 0xff30342e.toInt() else 0xfff4f6f2.toInt(), 16)
-                setOnClickListener { sheet.dismiss(); selected(index) }
-            }, LinearLayout.LayoutParams(-1, dp(54)).apply { bottomMargin = dp(8) })
+                tapFeedback(); setOnClickListener { sheet.dismiss(); selected(index) }
+            }
+            row.addView(NativeIcon(this, iconFor(label), if (label.startsWith("删除")) 0xffbb4848.toInt() else ink), LinearLayout.LayoutParams(dp(22), dp(22)))
+            row.addView(TextView(this).apply {
+                text = label; textSize = 16f; setTextColor(if (label.startsWith("删除")) 0xffbb4848.toInt() else ink)
+                gravity = Gravity.CENTER_VERTICAL
+            }, LinearLayout.LayoutParams(0, -1, 1f).apply { leftMargin = dp(14) })
+            if (index == selectedIndex) row.addView(NativeIcon(this, "check", green), LinearLayout.LayoutParams(dp(20), dp(20)))
+            content.addView(row, LinearLayout.LayoutParams(-1, dp(54)).apply { bottomMargin = dp(8) })
         }
         content.addView(TextView(this).apply {
             text = "取消"; textSize = 16f; setTextColor(secondary); gravity = Gravity.CENTER
@@ -971,7 +1045,7 @@ class MainActivity : AppCompatActivity() {
         drawerOverlay = overlay
         val shade = View(this).apply { setBackgroundColor(Color.BLACK); alpha = 0f; setOnClickListener { closeDrawer() } }
         overlay.addView(shade, FrameLayout.LayoutParams(-1, -1))
-        val width = minOf((resources.displayMetrics.widthPixels * 0.72f).toInt(), dp(340))
+        val width = minOf((resources.displayMetrics.widthPixels * .56667f).toInt(), dp(220))
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(if (dark) 0xff171717.toInt() else 0xfff5f5f5.toInt())
@@ -993,26 +1067,33 @@ class MainActivity : AppCompatActivity() {
         val links = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         scroll.addView(links)
         panel.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-        fun row(label: String, click: () -> Unit): TextView {
-            val view = TextView(this).apply {
-                text = label; textSize = 16f; setTextColor(ink); gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(16), 0, dp(12), 0)
-                background = rounded(Color.TRANSPARENT, 14)
+        fun row(label: String, icon: String, count: String = "", click: () -> Unit): LinearLayout {
+            val view = LinearLayout(this).apply {
+                gravity = Gravity.CENTER_VERTICAL; setPadding(dp(12), 0, dp(8), 0)
+                background = rounded(Color.TRANSPARENT, 14); tapFeedback()
                 setOnClickListener { closeDrawer(); click() }
             }
+            view.addView(NativeIcon(this, icon, ink), LinearLayout.LayoutParams(dp(18), dp(18)))
+            view.addView(TextView(this).apply { text = label; textSize = 15f; setTextColor(ink); isSingleLine = true },
+                LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(10) })
+            if (count.isNotEmpty()) view.addView(TextView(this).apply { text = count; textSize = 12f; setTextColor(secondary) })
             links.addView(view, LinearLayout.LayoutParams(-1, dp(52)))
             return view
         }
-        row("全部笔记") { leavePrivate() }
-        row("隐私笔记") { enterPrivate() }
+        links.addView(TextView(this).apply { text = "笔记空间"; textSize = 12f; setTextColor(secondary); setPadding(dp(12), dp(22), 0, dp(8)) })
+        row("全部笔记", "inbox", if (privateArea) "" else "${allNotes.size}") { leavePrivate() }
+        row("未分组", "archive", if (privateArea) "" else "${allNotes.count { it.groupId == null }}") {
+            leavePrivate(); groupId = ""; renderFilters(); renderCards()
+        }
+        row("隐私笔记", "lock", if (privateArea) "${allNotes.size}" else "⌑") { enterPrivate() }
         links.addView(TextView(this).apply {
             text = "分组"; textSize = 13f; setTextColor(secondary)
             setPadding(dp(16), dp(22), 0, dp(9))
         })
-        for (group in allGroups) row(group.name) {
+        for (group in allGroups) row(group.name, "folder", "${allNotes.count { it.groupId == group.id }}") {
             leavePrivate(); groupId = group.id; renderFilters(); renderCards()
         }.setOnLongClickListener { closeDrawer(); groupOptions(group); true }
-        row("＋  新建分组") { groupDialog() }
+        row("新建分组", "plus") { groupDialog() }
         panel.addView(TextView(this).apply {
             text = "⚙  设置"; textSize = 16f; setTextColor(ink); gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(16), 0, 0, 0)
@@ -1069,15 +1150,14 @@ class MainActivity : AppCompatActivity() {
                 showTextInputSheet("重命名分组", "分组名称", group.name) { name ->
                     io.execute { store.renameGroup(group.copy(name = name)); runOnUiThread { refresh() } }
                 }
-            } else MaterialAlertDialogBuilder(this).setTitle("删除分组？")
-                .setMessage("分组中的笔记会移到未分组。")
-                .setNegativeButton("取消", null).setPositiveButton("删除") { _, _ ->
-                    io.execute { store.removeGroup(group.id); runOnUiThread { groupId = null; refresh() } }
-                }.show()
+            } else showSheet("删除分组？笔记会移到未分组", arrayOf("删除分组")) {
+                io.execute { store.removeGroup(group.id); runOnUiThread { groupId = null; refresh() } }
+            }
         }
     }
 
     private fun openSettings() {
+        aboutOpen = false
         val page = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setBackgroundColor(this@MainActivity.background)
             val bars = root.rootWindowInsets?.getInsets(WindowInsets.Type.systemBars())
@@ -1098,16 +1178,7 @@ class MainActivity : AppCompatActivity() {
             isVerticalScrollBarEnabled = false
             addView(content)
         }, LinearLayout.LayoutParams(-1, 0, 1f))
-        fun row(title: String, detail: String, click: (() -> Unit)? = null) {
-            val item = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(18), dp(7), dp(18), dp(7)); background = rounded(this@MainActivity.paper, 17)
-            }
-            item.addView(TextView(this).apply { text = title; textSize = 16f; setTextColor(ink) })
-            item.addView(TextView(this).apply { text = detail; textSize = 12f; setTextColor(secondary) })
-            click?.let { item.setOnClickListener { it() } }
-            content.addView(item, LinearLayout.LayoutParams(-1, dp(70)).apply { topMargin = dp(10) })
-        }
+        fun row(title: String, detail: String = "", click: (() -> Unit)? = null) = settingsRow(content, title, detail, click)
         fun section(title: String) {
             content.addView(TextView(this).apply {
                 text = title; textSize = 14f; typeface = Typeface.DEFAULT_BOLD; setTextColor(secondary)
@@ -1116,7 +1187,7 @@ class MainActivity : AppCompatActivity() {
         }
         section("外观")
         val currentTheme = getSharedPreferences("appearance", Context.MODE_PRIVATE).getInt("theme", AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM)
-        row("主题", when (currentTheme) {
+        row("外观", when (currentTheme) {
             AppCompatDelegate.MODE_NIGHT_YES -> "深色"
             AppCompatDelegate.MODE_NIGHT_NO -> "浅色"
             else -> "跟随系统"
@@ -1134,23 +1205,17 @@ class MainActivity : AppCompatActivity() {
         }
         row("笔记布局", if (listLayout) "列表" else "宫格") {
             showSheet("笔记布局", arrayOf("宫格", "列表")) { choice ->
-                listLayout = choice == 1
-                getSharedPreferences("appearance", Context.MODE_PRIVATE).edit().putBoolean("list_layout", listLayout).apply()
-                cards.layoutManager = StaggeredGridLayoutManager(if (tablet || listLayout) 1 else 2, StaggeredGridLayoutManager.VERTICAL)
+                setListLayout(choice == 1)
                 closeSettings(); openSettings()
             }
         }
         section("安全与隐私")
         row("普通笔记", "直接打开 · 本地加密")
-        row("隐私笔记", "系统锁屏密码或生物识别") { closeSettings(); enterPrivate() }
+        row("隐私笔记", "支持系统验证") { closeSettings(); enterPrivate() }
         section("数据")
-        row("导入笔记", "拾页迁移 ZIP、Markdown、纯文本、小米笔记副本") { pickTransfer() }
+        row("导入笔记") { pickTransfer() }
         section("其他")
-        row("关于拾页 Native", "Android 原生单机版 · OpenALC · MIT") {
-            MaterialAlertDialogBuilder(this).setTitle("拾页 · Native")
-                .setMessage("Android 原生单机版 0.1.0\nGitHub: github.com/OpenALC/insp\nMIT License")
-                .setPositiveButton("完成", null).show()
-        }
+        row("关于拾页") { openAbout() }
         root.addView(page, FrameLayout.LayoutParams(-1, -1))
         page.alpha = 0f; page.translationX = dp(24).toFloat()
         page.animate().alpha(1f).translationX(0f).setDuration(220).start()
@@ -1159,8 +1224,89 @@ class MainActivity : AppCompatActivity() {
     private fun closeSettings() {
         val page = settingsOverlay ?: return
         settingsOverlay = null
+        if (aboutOpen) {
+            aboutOpen = false
+            root.removeView(page)
+            openSettings()
+            return
+        }
         page.animate().alpha(0f).translationX(dp(24).toFloat()).setDuration(190)
             .withEndAction { root.removeView(page) }.start()
+    }
+
+    private fun settingsRow(content: LinearLayout, title: String, detail: String = "", click: (() -> Unit)? = null) {
+        val item = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL; setPadding(dp(17), 0, dp(15), 0)
+            background = rounded(paper, 17)
+            if (click != null) { tapFeedback(); setOnClickListener { click() } }
+        }
+        item.addView(NativeIcon(this, iconFor(title), ink), LinearLayout.LayoutParams(dp(20), dp(20)))
+        item.addView(TextView(this).apply { text = title; textSize = 16f; setTextColor(ink); isSingleLine = true },
+            LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(13) })
+        if (detail.isNotEmpty()) item.addView(TextView(this).apply {
+            text = detail; textSize = 12f; setTextColor(secondary); maxLines = 1
+        }, LinearLayout.LayoutParams(-2, -2))
+        if (click != null) item.addView(NativeIcon(this, "next", secondary),
+            LinearLayout.LayoutParams(dp(16), dp(16)).apply { leftMargin = dp(7) })
+        content.addView(item, LinearLayout.LayoutParams(-1, dp(60)).apply { topMargin = dp(7) })
+    }
+
+    private fun openAbout() {
+        settingsOverlay?.let(root::removeView)
+        aboutOpen = true
+        val page = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setBackgroundColor(this@MainActivity.background)
+            val bars = root.rootWindowInsets?.getInsets(WindowInsets.Type.systemBars())
+            setPadding(dp(16), bars?.top ?: 0, dp(16), bars?.bottom ?: 0)
+        }
+        settingsOverlay = page
+        val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        header.addView(action("‹") { closeSettings() }, LinearLayout.LayoutParams(dp(48), dp(54)))
+        header.addView(TextView(this).apply { text = "关于拾页"; textSize = 22f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink) })
+        page.addView(header)
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        page.addView(ScrollView(this).apply { addView(content) }, LinearLayout.LayoutParams(-1, 0, 1f))
+        content.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+            setPadding(0, dp(28), 0, dp(28))
+            addView(TextView(this@MainActivity).apply { text = "拾页 · Native"; textSize = 25f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink) })
+            addView(TextView(this@MainActivity).apply { text = "给想法，留一页空白。"; textSize = 15f; setTextColor(secondary) })
+            addView(TextView(this@MainActivity).apply { text = "by OpenALC"; textSize = 12f; setTextColor(secondary) })
+        })
+        content.addView(TextView(this).apply { text = "应用信息"; textSize = 14f; setTextColor(secondary); setPadding(dp(8), dp(12), 0, dp(6)) })
+        settingsRow(content, "当前版本", "v${packageManager.getPackageInfo(packageName, 0).versionName}")
+        settingsRow(content, "获取更新") {
+            io.execute {
+                val message = try {
+                    val connection = java.net.URL("https://api.github.com/repos/OpenALC/insp-native/releases/latest").openConnection() as java.net.HttpURLConnection
+                    try {
+                        val status = connection.responseCode
+                        if (status == 404) "尚未发布正式版本" else if (status == 200) {
+                            val tag = JSONObject(connection.inputStream.bufferedReader().use { it.readText() }).getString("tag_name")
+                            "最新版本 $tag"
+                        } else "检查失败（HTTP $status）"
+                    } finally {
+                        connection.disconnect()
+                    }
+                } catch (error: Exception) {
+                    "检查更新失败：${error.localizedMessage ?: "网络不可用"}"
+                }
+                runOnUiThread { toast(message) }
+            }
+        }
+        settingsRow(content, "GitHub 仓库", "OpenALC/insp-native") { openUrl("https://github.com/OpenALC/insp-native") }
+        settingsRow(content, "开源协议", "MIT") { openUrl("https://github.com/OpenALC/insp-native/blob/main/LICENSE") }
+        content.addView(TextView(this).apply {
+            text = "拾页 Native 使用 Android、HarmonyOS 原生组件构建。完整源码、许可证及更新记录请见 GitHub 仓库。"
+            textSize = 13f; setTextColor(secondary); setPadding(dp(8), dp(22), dp(8), 0)
+        })
+        root.addView(page, FrameLayout.LayoutParams(-1, -1))
+        page.alpha = 0f; page.translationX = dp(24).toFloat()
+        page.animate().alpha(1f).translationX(0f).setDuration(220).start()
+    }
+
+    private fun openUrl(url: String) {
+        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
     }
 
     private fun leavePrivate() {
@@ -1304,6 +1450,7 @@ class MainActivity : AppCompatActivity() {
                             if (generation == privateGeneration && holder.image.tag == note.id) {
                                 holder.image.setImageDrawable(image)
                                 holder.image.visibility = View.VISIBLE
+                                (cards.layoutManager as StaggeredGridLayoutManager).invalidateSpanAssignments()
                             }
                         }
                     }
@@ -1320,12 +1467,19 @@ class MainActivity : AppCompatActivity() {
     private fun action(label: String, click: () -> Unit) = TextView(this).apply {
         text = label; textSize = 22f; setTextColor(ink); gravity = Gravity.CENTER
         background = rounded(Color.TRANSPARENT, 50)
+        tapFeedback()
         setOnClickListener { click() }
+    }
+
+    private fun iconButton(icon: String, click: () -> Unit) = FrameLayout(this).apply {
+        tapFeedback(); setOnClickListener { click() }
+        addView(NativeIcon(this@MainActivity, icon, ink), FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER))
     }
 
     private fun pill(label: String, click: () -> Unit) = TextView(this).apply {
         text = label; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink); gravity = Gravity.CENTER
         background = rounded(if (label.contains("灵感")) paper else if (dark) 0xff263f25.toInt() else 0xffe6f8df.toInt(), 28)
+        tapFeedback()
         setOnClickListener { click() }
     }
 

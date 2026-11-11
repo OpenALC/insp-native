@@ -1,6 +1,6 @@
 # 拾页 Native
 
-拾页的移动端原生单机版。Android 使用 Kotlin，HarmonyOS 使用 ArkTS / ArkUI。旧版拾页仍在 `../insp`，两版包名和本地数据彼此独立。
+拾页的移动端原生单机版。Android 使用 Kotlin，HarmonyOS 使用 ArkTS / ArkUI。[拾页 · Inspiration](https://github.com/OpenALC/insp) 是独立项目；两版包名和本地数据彼此独立。
 
 ## Android 当前进度
 
@@ -9,11 +9,11 @@
 - 长按卡片多选、批量移动／删除、分组左右滑动切换、滚动时收缩的新建栏和宽屏分栏布局。
 - 系统纯文本／图片分享，Markdown、Word、PDF 导出；Markdown、纯文本、小米笔记副本 ZIP 导入。
 - SQLite 保存笔记与附件；内容、标题、分组名和图片使用 Android Keystore 管理的 AES-GCM 加密。隐私区进入时调用系统身份验证，退出或切到后台时清除会话密钥。
-- Android 版无 WebView、Rust 动态库或网络权限，包名为 `com.openalc.inspnative`，不会覆盖旧版拾页。
+- Android 版无 WebView 或 Rust 动态库；只在用户点击「获取更新」时访问 GitHub。包名为 `com.openalc.inspnative`，不会覆盖旧版拾页。
 
 ## 与旧版拾页迁移数据
 
-旧版拾页的「设置 → 导出到拾页 Native」生成迁移 ZIP。Native 的「设置 → 从拾页导入」选择该文件。迁移包含可见的普通笔记、已解锁的隐私笔记、分组、灵感笔记节点和图片。Native 端按原笔记 ID 导入；再次导入会跳过已存在的笔记。旧版数据不会被删除。
+旧版拾页的「设置 → 导出到拾页 Native」生成迁移 ZIP。Native 的「设置 → 导入笔记」选择该文件。迁移包含可见的普通笔记、已解锁的隐私笔记、分组、灵感笔记节点和图片。Native 端按原笔记 ID 导入；再次导入会跳过已存在的笔记。旧版数据不会被删除。
 
 迁移 ZIP 含**明文**，应存放在可信位置，导入后由用户自行处置。当前是手动单向迁移，两版没有实时共用数据库。富文本导入保留常见的文字标记、段落、标题、引用、列表、链接和图片；旧版编辑器的高级节点尚未全部映射，迁移文件保留原始内容结构。
 
