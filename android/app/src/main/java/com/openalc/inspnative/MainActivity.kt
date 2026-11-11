@@ -15,7 +15,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.Drawable
-import android.graphics.drawable.RippleDrawable
+import android.app.Dialog
 import android.hardware.biometrics.BiometricManager
 import android.hardware.biometrics.BiometricPrompt
 import android.os.Bundle
@@ -104,6 +104,7 @@ class MainActivity : AppCompatActivity() {
     }
     private var selectionMode = false
     private var drawerOverlay: FrameLayout? = null
+    private var homeMenuOverlay: FrameLayout? = null
     private var settingsOverlay: LinearLayout? = null
     private var settingsParent: LinearLayout? = null
     private var aboutOpen = false
@@ -112,6 +113,7 @@ class MainActivity : AppCompatActivity() {
     private var bodyInput: EditText? = null
     private var titleInput: EditText? = null
     private var formatToolbar: View? = null
+    private val formatButtons = mutableMapOf<String, View>()
     private var doneButton: View? = null
     private var editingMode = false
     private val pendingStyles = mutableSetOf<String>()
@@ -193,6 +195,7 @@ class MainActivity : AppCompatActivity() {
                     return
                 }
                 when {
+                    homeMenuOverlay != null -> closeHomeMenu()
                     settingsOverlay != null -> closeSettings()
                     drawerOverlay != null -> closeDrawer()
                     selectionMode -> clearSelection()
@@ -232,7 +235,7 @@ class MainActivity : AppCompatActivity() {
         headerLayoutButton.addView(headerLayoutAction, FrameLayout.LayoutParams(-1, -1))
         headerLayoutButton.addView(headerLayoutIcon, FrameLayout.LayoutParams(dp(23), dp(23), Gravity.CENTER))
         header.addView(headerLayoutButton, LinearLayout.LayoutParams(dp(48), dp(48)))
-        val moreButton = FrameLayout(this).apply { tapFeedback(); setOnClickListener { if (selectionMode) clearSelection() else listOptions() } }
+        val moreButton = FrameLayout(this).apply { tapFeedback(); setOnClickListener { if (selectionMode) clearSelection() else listOptions(this) } }
         headerAction = TextView(this).apply { text = "取消"; textSize = 13f; setTextColor(ink); gravity = Gravity.CENTER; visibility = View.GONE }
         headerMoreIcon = NativeIcon(this, "more", ink)
         moreButton.addView(headerAction, FrameLayout.LayoutParams(-1, -1))
@@ -254,7 +257,7 @@ class MainActivity : AppCompatActivity() {
             layoutManager = StaggeredGridLayoutManager(if (tablet || listLayout) 1 else 2, StaggeredGridLayoutManager.VERTICAL)
             (itemAnimator as SimpleItemAnimator).supportsChangeAnimations = false
             clipToPadding = false
-            setPadding(dp(14), dp(16), dp(14), dp(18))
+            setPadding(dp(14), dp(16), dp(14), dp(102))
             addOnItemTouchListener(object : RecyclerView.SimpleOnItemTouchListener() {
                 private var downX = 0f
                 private var downY = 0f
@@ -283,7 +286,9 @@ class MainActivity : AppCompatActivity() {
         }
         cardAdapter = Cards()
         cards.adapter = cardAdapter
-        page.addView(cards, LinearLayout.LayoutParams(-1, 0, 1f))
+        val cardSurface = FrameLayout(this)
+        cardSurface.addView(cards, FrameLayout.LayoutParams(-1, -1))
+        page.addView(cardSurface, LinearLayout.LayoutParams(-1, 0, 1f))
         composeBar = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(6), dp(6), dp(6), dp(6))
@@ -296,14 +301,14 @@ class MainActivity : AppCompatActivity() {
         composeBar.addView(composeNoteButton, LinearLayout.LayoutParams(expanded, dp(48)))
         composeBar.addView(View(this).apply { setBackgroundColor(secondary) }, LinearLayout.LayoutParams(dp(1), dp(22)).apply { leftMargin = dp(5); rightMargin = dp(5) })
         composeBar.addView(composeMindButton, LinearLayout.LayoutParams(expanded, dp(48)))
-        page.addView(composeBar, LinearLayout.LayoutParams(-2, dp(60)).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(18) })
+        cardSurface.addView(composeBar, FrameLayout.LayoutParams(-2, dp(60), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(18) })
         selectionBar = LinearLayout(this).apply {
             gravity = Gravity.CENTER; setPadding(dp(8), dp(8), dp(8), dp(8)); visibility = View.GONE
             background = rounded(paper, 24); elevation = dp(8).toFloat()
         }
         selectionBar.addView(selectionAction("移动到", "folder", ink) { moveSelected() }, LinearLayout.LayoutParams(0, dp(48), 1f))
         selectionBar.addView(selectionAction("删除", "trash", 0xffbb4848.toInt()) { deleteSelected() }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { leftMargin = dp(8) })
-        page.addView(selectionBar, LinearLayout.LayoutParams(-1, dp(64)).apply { setMargins(dp(22), 0, dp(22), dp(18)) })
+        cardSurface.addView(selectionBar, FrameLayout.LayoutParams(-1, dp(64), Gravity.BOTTOM).apply { setMargins(dp(22), 0, dp(22), dp(18)) })
         return page
     }
 
@@ -490,7 +495,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showEditor(note: NativeNote, document: Spannable?, card: View?, startEditing: Boolean) {
         undoHistory.clear(); redoHistory.clear(); editBurst = false
-        editingMode = false; pendingStyles.clear(); suppressedStyles.clear(); pendingParagraph = null
+        editingMode = false; pendingStyles.clear(); suppressedStyles.clear(); pendingParagraph = null; formatButtons.clear()
         editor.removeAllViews()
         val top = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(10), dp(8), dp(10), dp(8)) }
         top.addView(action("‹") { closeEditor() }, LinearLayout.LayoutParams(dp(48), dp(48)))
@@ -530,7 +535,7 @@ class MainActivity : AppCompatActivity() {
         top.addView(action("⋯") { noteOptions(note) }, LinearLayout.LayoutParams(dp(48), dp(48)))
         editor.addView(top)
         if (note.kind == "richtext") {
-            val input = EditText(this).apply {
+            val input = RichNoteInput(this).apply {
                 gravity = Gravity.TOP; textSize = 18f; setTextColor(ink); setHintTextColor(secondary)
                 background = null; hint = "从这里开始记录…"
                 setPadding(dp(24), dp(22), dp(24), dp(24))
@@ -563,16 +568,20 @@ class MainActivity : AppCompatActivity() {
                                 if (command == "quote") RichTextCodec.styleComment(this@apply.text, lineStart, lineEnd, dark)
                                 pendingParagraph = null
                             }
-                            scheduleSave(); settleHistory()
+                            scheduleSave(); settleHistory(); post { updateFormatButtons() }
                         }
                     }
-                    override fun afterTextChanged(s: Editable?) = Unit
+                    override fun afterTextChanged(s: Editable?) { post { updateFormatButtons() } }
                 })
                 setOnTouchListener { view, event ->
                     if (event.actionMasked == MotionEvent.ACTION_UP) {
                         val field = view as EditText
                         val offset = field.getOffsetForPosition(event.x, event.y)
                         if (!editingMode) { enterEditing(field, offset); return@setOnTouchListener true }
+                        if (offset != field.selectionStart) {
+                            pendingStyles.clear(); suppressedStyles.clear(); pendingParagraph = null
+                            field.post { updateFormatButtons() }
+                        }
                         val start = if (offset == 0) 0 else field.text.lastIndexOf('\n', offset - 1) + 1
                         if (offset <= start + 1 && start < field.length() && field.text[start] in "☐☑") {
                             field.text.replace(start, start + 1, if (field.text[start] == '☐') "☑" else "☐")
@@ -584,10 +593,12 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             bodyInput = input
+            input.selectionChanged = { updateFormatButtons() }
             mindPanel = null
             editor.addView(input, LinearLayout.LayoutParams(-1, 0, 1f))
             formatToolbar = formatBar().apply { visibility = View.GONE }
             editor.addView(formatToolbar, LinearLayout.LayoutParams(-1, dp(57)))
+            updateFormatButtons()
         } else {
             bodyInput = null
             formatToolbar = null
@@ -679,7 +690,7 @@ class MainActivity : AppCompatActivity() {
         editor.visibility = View.GONE
         tabletPlaceholder?.visibility = View.VISIBLE
         active = null; bodyInput = null; titleInput = null; mindPanel = null; selectedCard = null
-        formatToolbar = null; doneButton = null; editingMode = false; pendingStyles.clear(); suppressedStyles.clear(); pendingParagraph = null
+        formatToolbar = null; doneButton = null; editingMode = false; pendingStyles.clear(); suppressedStyles.clear(); pendingParagraph = null; formatButtons.clear()
         undoHistory.clear(); redoHistory.clear(); historyTask?.let(handler::removeCallbacks); editBurst = false
         if (!tablet && card != null && card.parent != null) handler.postDelayed({ refresh() }, 280) else refresh()
     }
@@ -711,6 +722,7 @@ class MainActivity : AppCompatActivity() {
         for ((label, command) in commands) {
             val button = if (command in setOf("strike", "link", "image")) iconButton(command) { format(command) }
                 else action(label) { format(command) }
+            if (command !in setOf("undo", "redo", "divider", "link", "image")) formatButtons[command] = button
             row.addView(button, LinearLayout.LayoutParams(dp(50), dp(48)))
         }
         scroll.addView(row)
@@ -730,14 +742,8 @@ class MainActivity : AppCompatActivity() {
         val input = bodyInput ?: return
         val selectionStart = input.selectionStart.coerceAtLeast(0)
         val selectionEnd = input.selectionEnd.coerceAtLeast(selectionStart)
-        if (command == "task") {
-            val start = if (selectionStart == 0) 0 else input.text.lastIndexOf('\n', selectionStart - 1) + 1
-            captureUndo(input)
-            when (input.text.getOrNull(start)) {
-                '☐', '☑' -> input.text.delete(start, (start + 2).coerceAtMost(input.length()))
-                else -> input.text.insert(start, "☐ ")
-            }
-            scheduleSave(); settleHistory()
+        if (command == "task" || (command in setOf("quote", "bullet") && selectionStart == selectionEnd)) {
+            toggleLineMarker(input, selectionStart, command)
             return
         }
         if (command == "divider") {
@@ -756,11 +762,17 @@ class MainActivity : AppCompatActivity() {
                 val inherited = input.text.getSpans(0, input.length(), Any::class.java).any {
                     matchesFormat(it, command) && input.text.getSpanStart(it) < start && input.text.getSpanEnd(it) >= start
                 }
-                if (command in pendingStyles) pendingStyles.remove(command)
-                else if (command in suppressedStyles) suppressedStyles.remove(command)
+                if (command in pendingStyles) {
+                    pendingStyles.remove(command)
+                    if (inherited) suppressedStyles.add(command)
+                } else if (command in suppressedStyles) {
+                    suppressedStyles.remove(command)
+                    pendingStyles.add(command)
+                }
                 else if (inherited) suppressedStyles.add(command)
                 else pendingStyles.add(command)
             }
+            updateFormatButtons()
             return
         }
         if (command == "indentPlus" || command == "indentMinus") {
@@ -770,7 +782,7 @@ class MainActivity : AppCompatActivity() {
             current.forEach(input.text::removeSpan)
             val next = (margin + if (command == "indentPlus") dp(24) else -dp(24)).coerceIn(0, dp(96))
             if (next > 0) input.text.setSpan(LeadingMarginSpan.Standard(next), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            scheduleSave(); settleHistory()
+            scheduleSave(); settleHistory(); updateFormatButtons()
             return
         }
         captureUndo(input)
@@ -780,11 +792,88 @@ class MainActivity : AppCompatActivity() {
             (command !in setOf("left", "center", "right") || (it as AlignmentSpan).alignment == (newFormatSpan(command) as AlignmentSpan).alignment) }
         stripFormat(input.text, start, end, command)
         if (!covered) {
-            input.text.setSpan(newFormatSpan(command), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            input.text.setSpan(newFormatSpan(command), start, end,
+                if (command == "quote") Spanned.SPAN_EXCLUSIVE_INCLUSIVE else Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             if (command == "quote") RichTextCodec.styleComment(input.text, start, end, dark)
         } else if (command == "quote") RichTextCodec.removeCommentStyle(input.text, start, end, dark)
-        scheduleSave(); settleHistory()
+        scheduleSave(); settleHistory(); updateFormatButtons()
     }
+
+    private fun toggleLineMarker(input: EditText, cursor: Int, command: String) {
+        val start = if (cursor == 0) 0 else input.text.lastIndexOf('\n', cursor - 1) + 1
+        var end = input.text.indexOf('\n', cursor).let { if (it < 0) input.length() else it }
+        val marker = when (command) { "quote" -> "❝ "; "bullet" -> "• "; else -> "☐ " }
+        val hasMarker = input.text.substring(start, end).startsWith(marker) ||
+            (command == "task" && input.text.substring(start, end).startsWith("☑ "))
+        val hasSpan = end > start && command != "task" && input.text.getSpans(start, end, Any::class.java).any {
+            matchesFormat(it, command) && input.text.getSpanStart(it) <= start && input.text.getSpanEnd(it) >= end
+        }
+        captureUndo(input)
+        restoringHistory = true
+        var position = cursor
+        if (hasMarker || hasSpan) {
+            if (hasMarker) input.text.delete(start, start + marker.length)
+            val updatedEnd = end - if (hasMarker) marker.length else 0
+            if (updatedEnd > start && command != "task") {
+                stripFormat(input.text, start, updatedEnd, command)
+                if (command == "quote") RichTextCodec.removeCommentStyle(input.text, start, updatedEnd, dark)
+            }
+            input.setSelection((position - if (hasMarker) marker.length else 0).coerceIn(start, input.length()))
+        } else {
+            for ((other, prefix) in listOf("quote" to "❝ ", "bullet" to "• ", "task" to "☐ ", "task" to "☑ ")) {
+                if (other != command && input.text.substring(start, end).startsWith(prefix)) {
+                    input.text.delete(start, start + prefix.length)
+                    end -= prefix.length
+                    position = (position - prefix.length).coerceAtLeast(start)
+                    if (end > start && other != "task") {
+                        stripFormat(input.text, start, end, other)
+                        if (other == "quote") RichTextCodec.removeCommentStyle(input.text, start, end, dark)
+                    }
+                }
+            }
+            input.text.insert(start, marker)
+            if (command == "quote") {
+                input.text.setSpan(QuoteSpan(green), start, end + marker.length, Spanned.SPAN_EXCLUSIVE_INCLUSIVE)
+                RichTextCodec.styleComment(input.text, start, end + marker.length, dark)
+            }
+            input.setSelection((position + marker.length).coerceAtMost(input.length()))
+        }
+        restoringHistory = false
+        pendingParagraph = null
+        scheduleSave(); settleHistory(); updateFormatButtons()
+    }
+
+    private fun updateFormatButtons() {
+        val input = bodyInput ?: return
+        val start = input.selectionStart.coerceAtLeast(0)
+        val end = input.selectionEnd.coerceAtLeast(start)
+        val lineStart = if (start == 0) 0 else input.text.lastIndexOf('\n', start - 1) + 1
+        val lineEnd = input.text.indexOf('\n', end).let { if (it < 0) input.length() else it }
+        val line = input.text.substring(lineStart, lineEnd)
+        for ((command, button) in formatButtons) {
+            val active = when (command) {
+                "task" -> line.startsWith("☐ ") || line.startsWith("☑ ")
+                "bullet" -> line.startsWith("• ") || hasFormatAt(input, lineStart, lineEnd, command)
+                "quote" -> line.startsWith("❝ ") || hasFormatAt(input, lineStart, lineEnd, command)
+                "indentPlus" -> input.text.getSpans(lineStart, lineEnd, LeadingMarginSpan.Standard::class.java).isNotEmpty()
+                "indentMinus" -> false
+                else -> command in pendingStyles || command == pendingParagraph ||
+                    (command !in suppressedStyles && hasFormatAt(input, start, end, command))
+            }
+            button.background = rounded(if (active) (if (dark) 0xff34562c.toInt() else 0xffe0f7d8.toInt()) else Color.TRANSPARENT, 16)
+        }
+    }
+
+    private fun hasFormatAt(input: EditText, start: Int, end: Int, command: String): Boolean =
+        input.text.getSpans((start - 1).coerceAtLeast(0), (end + 1).coerceAtMost(input.length()), Any::class.java).any {
+            matchesFormat(it, command) && (it !is AlignmentSpan || when (command) {
+                "center" -> it.alignment == Layout.Alignment.ALIGN_CENTER
+                "right" -> it.alignment == Layout.Alignment.ALIGN_OPPOSITE
+                "left" -> it.alignment == Layout.Alignment.ALIGN_NORMAL
+                else -> true
+            }) && input.text.getSpanStart(it) <= start &&
+                input.text.getSpanEnd(it) >= end && input.text.getSpanEnd(it) > input.text.getSpanStart(it)
+        }
 
     private fun stripFormat(text: Editable, start: Int, end: Int, command: String) {
         val spans = text.getSpans(start, end, Any::class.java).filter {
@@ -1065,11 +1154,48 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun listOptions() {
-        showSheet("笔记操作", arrayOf("新建分组", "隐私笔记")) { index -> when (index) {
-            0 -> groupDialog()
-            1 -> enterPrivate()
-        } }
+    private fun listOptions(anchor: View) {
+        if (homeMenuOverlay != null) { closeHomeMenu(); return }
+        val overlay = FrameLayout(this).apply { setOnClickListener { closeHomeMenu() } }
+        homeMenuOverlay = overlay
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(7), dp(7), dp(7), dp(7))
+            background = rounded(paper, 22)
+            elevation = dp(14).toFloat()
+            pivotX = dp(224).toFloat(); pivotY = 0f
+            alpha = 0f; scaleX = .86f; scaleY = .86f; translationY = -dp(8).toFloat()
+            setOnClickListener { }
+        }
+        fun item(label: String, icon: String, click: () -> Unit) {
+            panel.addView(LinearLayout(this).apply {
+                gravity = Gravity.CENTER_VERTICAL; setPadding(dp(16), 0, dp(12), 0)
+                background = rounded(Color.TRANSPARENT, 15)
+                tapFeedback()
+                addView(NativeIcon(this@MainActivity, icon, ink), LinearLayout.LayoutParams(dp(20), dp(20)))
+                addView(TextView(this@MainActivity).apply { text = label; textSize = 16f; setTextColor(ink) },
+                    LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(12) })
+                setOnClickListener { closeHomeMenu(click) }
+            }, LinearLayout.LayoutParams(-1, dp(52)))
+        }
+        item("新建分组", "plus") { groupDialog() }
+        item("隐私笔记", "lock") { enterPrivate() }
+        val anchorPosition = IntArray(2).also(anchor::getLocationOnScreen)
+        val rootPosition = IntArray(2).also(root::getLocationOnScreen)
+        overlay.addView(panel, FrameLayout.LayoutParams(dp(232), -2, Gravity.TOP or Gravity.END).apply {
+            topMargin = anchorPosition[1] - rootPosition[1] + anchor.height + dp(4)
+            rightMargin = dp(18)
+        })
+        root.addView(overlay, FrameLayout.LayoutParams(-1, -1))
+        panel.animate().alpha(1f).scaleX(1f).scaleY(1f).translationY(0f)
+            .setDuration(230).setInterpolator(OvershootInterpolator(.55f)).start()
+    }
+
+    private fun closeHomeMenu(after: () -> Unit = {}) {
+        val overlay = homeMenuOverlay ?: return
+        homeMenuOverlay = null
+        overlay.getChildAt(0).animate().alpha(0f).scaleX(.88f).scaleY(.88f).translationY(-dp(6).toFloat())
+            .setDuration(150).withEndAction { root.removeView(overlay); after() }.start()
     }
 
     private fun iconFor(label: String) = when {
@@ -1090,8 +1216,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun View.tapFeedback() {
-        foreground = RippleDrawable(ColorStateList.valueOf(if (dark) 0x6654d81b else 0x4454d81b), null,
-            GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadius = dp(28).toFloat(); setColor(Color.WHITE) })
+        val ripple = TapFeedbackDrawable(green, dp(28).toFloat())
+        foreground = ripple
+        setOnTouchListener { _, event ->
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) ripple.pulse(event.x, event.y)
+            false
+        }
+    }
+
+    private fun presentSheet(sheet: BottomSheetDialog, content: View) {
+        val surround = FrameLayout(this).apply { setPadding(dp(16), 0, dp(16), dp(16)) }
+        surround.addView(content, FrameLayout.LayoutParams(minOf(resources.displayMetrics.widthPixels - dp(32), dp(500)), -2, Gravity.CENTER_HORIZONTAL))
+        sheet.setContentView(surround)
+        sheet.show()
+        val bottom = sheet.findViewById<View>(com.google.android.material.R.id.design_bottom_sheet)!!
+        bottom.setBackgroundColor(Color.TRANSPARENT)
     }
 
     fun showSheet(title: String, items: Array<String>, selectedIndex: Int = -1, selected: (Int) -> Unit) {
@@ -1124,9 +1263,7 @@ class MainActivity : AppCompatActivity() {
             text = "取消"; textSize = 16f; setTextColor(secondary); gravity = Gravity.CENTER
             setOnClickListener { sheet.dismiss() }
         }, LinearLayout.LayoutParams(-1, dp(48)))
-        sheet.setContentView(content)
-        sheet.show()
-        sheet.findViewById<View>(com.google.android.material.R.id.design_bottom_sheet)?.setBackgroundColor(Color.TRANSPARENT)
+        presentSheet(sheet, content)
     }
 
     private fun showFormSheet(title: String, fields: View, actionLabel: String, submit: () -> Unit) {
@@ -1145,9 +1282,7 @@ class MainActivity : AppCompatActivity() {
         actions.addView(action("取消") { sheet.dismiss() }, LinearLayout.LayoutParams(dp(76), dp(48)))
         actions.addView(action(actionLabel) { sheet.dismiss(); submit() }, LinearLayout.LayoutParams(dp(76), dp(48)))
         content.addView(actions, LinearLayout.LayoutParams(-1, dp(58)))
-        sheet.setContentView(content)
-        sheet.show()
-        sheet.findViewById<View>(com.google.android.material.R.id.design_bottom_sheet)?.setBackgroundColor(Color.TRANSPARENT)
+        presentSheet(sheet, content)
     }
 
     fun showTextInputSheet(title: String, hint: String, initial: String = "", submit: (String) -> Unit) {
@@ -1182,9 +1317,44 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun groupDialog() {
-        showTextInputSheet("新建分组", "分组名称") { name ->
-            io.execute { store.addGroup(name); runOnUiThread { refresh() } }
+        val dialog = Dialog(this)
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(23), dp(24), dp(18))
+            background = rounded(paper, 26)
         }
+        content.addView(TextView(this).apply {
+            text = "新建分组"; textSize = 22f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink)
+        }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(18) })
+        val input = EditText(this).apply {
+            hint = "分组名称"; setSingleLine(true); textSize = 16f
+            setTextColor(ink); setHintTextColor(secondary)
+            background = rounded(if (dark) 0xff30342e.toInt() else 0xfff4f6f2.toInt(), 14)
+            setPadding(dp(16), 0, dp(16), 0)
+        }
+        content.addView(input, LinearLayout.LayoutParams(-1, dp(52)))
+        val actions = LinearLayout(this).apply { gravity = Gravity.END; setPadding(0, dp(16), 0, 0) }
+        actions.addView(TextView(this).apply {
+            text = "取消"; textSize = 16f; setTextColor(secondary); gravity = Gravity.CENTER
+            tapFeedback(); setOnClickListener { dialog.dismiss() }
+        }, LinearLayout.LayoutParams(dp(74), dp(48)))
+        actions.addView(TextView(this).apply {
+            text = "创建"; textSize = 16f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.BLACK); gravity = Gravity.CENTER
+            background = rounded(green, 16); tapFeedback()
+            setOnClickListener {
+                val name = input.text.toString().trim()
+                if (name.isNotEmpty()) {
+                    dialog.dismiss()
+                    io.execute { store.addGroup(name); runOnUiThread { refresh() } }
+                }
+            }
+        }, LinearLayout.LayoutParams(dp(82), dp(48)).apply { leftMargin = dp(8) })
+        content.addView(actions, LinearLayout.LayoutParams(-1, -2))
+        dialog.setContentView(content)
+        dialog.setCanceledOnTouchOutside(false)
+        dialog.show()
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+        dialog.window?.setLayout(minOf(resources.displayMetrics.widthPixels - dp(48), dp(420)), -2)
     }
 
     private fun openDrawer() {
@@ -1414,13 +1584,16 @@ class MainActivity : AppCompatActivity() {
         header.addView(TextView(this).apply { text = "关于拾页"; textSize = 22f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink) })
         page.addView(header)
         val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        page.addView(ScrollView(this).apply { addView(content) }, LinearLayout.LayoutParams(-1, 0, 1f))
+        page.addView(ScrollView(this).apply {
+            isFillViewport = true
+            addView(content, FrameLayout.LayoutParams(-1, -2))
+        }, LinearLayout.LayoutParams(-1, 0, 1f))
         content.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
             setPadding(0, dp(28), 0, dp(28))
-            addView(TextView(this@MainActivity).apply { text = "拾页 · Native"; textSize = 25f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink) })
-            addView(TextView(this@MainActivity).apply { text = "给想法，留一页空白。"; textSize = 15f; setTextColor(secondary) })
-            addView(TextView(this@MainActivity).apply { text = "by OpenALC"; textSize = 12f; setTextColor(secondary) })
+            addView(TextView(this@MainActivity).apply { text = "拾页 · Native"; textSize = 25f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink); gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-1, -2))
+            addView(TextView(this@MainActivity).apply { text = "给想法，留一页空白。"; textSize = 15f; setTextColor(secondary); gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-1, -2))
+            addView(TextView(this@MainActivity).apply { text = "by OpenALC"; textSize = 12f; setTextColor(secondary); gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-1, -2))
         }, LinearLayout.LayoutParams(-1, -2))
         content.addView(TextView(this).apply { text = "应用信息"; textSize = 14f; setTextColor(secondary); setPadding(dp(8), dp(12), 0, dp(6)) })
         settingsRow(content, "当前版本", "v${packageManager.getPackageInfo(packageName, 0).versionName}")

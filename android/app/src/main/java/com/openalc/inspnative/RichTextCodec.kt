@@ -36,7 +36,7 @@ object RichTextCodec {
 
     fun styleComment(text: Spannable, start: Int, end: Int, dark: Boolean) {
         text.setSpan(CommentTextSpan(if (dark) 0xffa4afa1.toInt() else 0xff777e77.toInt()),
-            start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            start, end, Spannable.SPAN_EXCLUSIVE_INCLUSIVE)
     }
 
     fun removeCommentStyle(text: Spannable, start: Int, end: Int, dark: Boolean) {
@@ -113,7 +113,8 @@ object RichTextCodec {
                 "image" -> image(entry.getString("attachmentId"))?.let { ImageSpan(it, entry.getString("attachmentId")) }
                 else -> null
             }
-            if (span != null) result.setSpan(span, start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            if (span != null) result.setSpan(span, start, end,
+                if (entry.getString("type") == "quote") Spannable.SPAN_EXCLUSIVE_INCLUSIVE else Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             if (entry.getString("type") == "quote") styleComment(result, start, end, dark)
         }
         return result

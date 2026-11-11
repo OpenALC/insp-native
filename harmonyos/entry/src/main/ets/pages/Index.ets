@@ -65,6 +65,7 @@ struct Index {
   @State private search: string = '';
   @State private noteOptions: boolean = false;
   @State private homeOptions: boolean = false;
+  @State private richActive: string[] = [];
   @State private movingGroup: boolean = false;
   private saveTimer: number = -1;
   private richController: RichEditorController = new RichEditorController();
@@ -117,7 +118,10 @@ struct Index {
   }
 
   onBackPress(): boolean {
-    if (this.themeChoiceOpen || this.layoutChoiceOpen) {
+    if (this.addingGroup) {
+      this.addingGroup = false;
+      this.groupName = '';
+    } else if (this.themeChoiceOpen || this.layoutChoiceOpen) {
       this.themeChoiceOpen = false;
       this.layoutChoiceOpen = false;
     } else if (this.batchMoveOpen || this.batchDeleteOpen) {
@@ -333,10 +337,49 @@ struct Index {
   private changedRich(): void {
     if (this.richLoading) return;
     this.scheduleSave();
+    this.refreshRichActive();
+  }
+
+  private refreshRichActive(): void {
+    if (!this.richReady) return;
+    const style = this.richController.getTypingStyle();
+    const active: string[] = [];
+    if (style.fontWeight === FontWeight.Bold) active.push('bold');
+    if (style.fontStyle === FontStyle.Italic) active.push('italic');
+    if (style.fontSize === 24) active.push('heading');
+    if (style.fontSize === 16) active.push('quote');
+    if (style.decoration?.type === TextDecorationType.Underline) active.push('underline');
+    if (style.decoration?.type === TextDecorationType.LineThrough) active.push('strike');
+    if (this.highlighted(style.textBackgroundStyle?.color)) active.push('highlight');
+    this.richActive = active;
+  }
+
+  private toggleQuoteMarker(offset: number): void {
+    const content = this.richController.getSpans().map((part: RichEditorTextSpanResult | RichEditorImageSpanResult): string =>
+      typeof (part as RichEditorTextSpanResult).value === 'string' ? (part as RichEditorTextSpanResult).value : '').join('');
+    const start = content.lastIndexOf('\n', Math.max(0, offset - 1)) + 1;
+    const quoted = content.slice(start).startsWith('❝ ');
+    if (quoted) {
+      this.richController.deleteSpans({ start: start, end: start + 2 });
+      this.richController.setCaretOffset(Math.max(start, offset - 2));
+    } else {
+      this.richController.addTextSpan('❝ ', { offset: start,
+        style: { fontSize: 16, fontColor: this.dark ? '#A4AFA1' : '#777E77' } });
+      this.richController.setCaretOffset(offset + 2);
+    }
+    const style = this.richController.getTypingStyle();
+    style.fontSize = quoted ? 18 : 16;
+    style.fontColor = quoted ? (this.dark ? '#D8DED4' : '#141914') : (this.dark ? '#A4AFA1' : '#777E77');
+    this.richController.setTypingStyle(style);
+    this.changedRich();
   }
 
   private formatRich(kind: string): void {
     const selection = this.richController.getSelection().selection;
+    if (kind === 'quote' && selection[0] === selection[1]) {
+      this.toggleQuoteMarker(selection[0]);
+      return;
+    }
     if (selection[0] === selection[1]) {
       const style = this.richController.getTypingStyle();
       const next: RichEditorTextStyle = style;
@@ -359,6 +402,7 @@ struct Index {
         next.decoration = { type: style.decoration?.type === decoration ? TextDecorationType.None : decoration };
       }
       this.richController.setTypingStyle(next);
+      this.refreshRichActive();
       return;
     }
     const spans = this.richController.getSpans({ start: selection[0], end: selection[1] });
@@ -390,6 +434,7 @@ struct Index {
         textStyle: { decoration: { type: style.decoration?.type === type ? TextDecorationType.None : type } } });
     }
     this.changedRich();
+    this.refreshRichActive();
   }
 
   private async enterPrivate(): Promise<void> {
@@ -714,27 +759,14 @@ struct Index {
       ForEach(this.groups, (group: NoteGroup) => {
         this.sidebarItem(group.name, group.id)
       }, (group: NoteGroup): string => group.id)
-      if (this.addingGroup) {
-        Row() {
-          TextInput({ placeholder: '分组名称', text: this.groupName })
-            .fontColor(this.dark ? '#D8DED4' : '#141914')
-            .placeholderColor(this.dark ? '#A4AFA1' : '#677166')
-            .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
-            .onChange((value: string): void => { this.groupName = value; })
-            .width(0).layoutWeight(1)
-          Button('确定').width(62).fontColor('#141914').backgroundColor('#54D81B').borderRadius(14)
-            .onClick((): void => this.addGroup())
-        }
-      } else {
-        Button() {
-          Row({ space: 10 }) {
-            Image($rawfile('nav_plus.svg')).width(18).height(18)
-            Text('新建分组').fontSize(15).fontColor(this.dark ? '#D8DED4' : '#141914')
-          }.width('100%')
-        }.type(ButtonType.Normal).width('100%').height(48)
-          .backgroundColor(this.dark ? '#20271E' : '#EBF1E8').borderRadius(14)
-          .onClick((): void => { this.addingGroup = true; })
-      }
+      Button() {
+        Row({ space: 10 }) {
+          Image($rawfile('nav_plus.svg')).width(18).height(18)
+          Text('新建分组').fontSize(15).fontColor(this.dark ? '#D8DED4' : '#141914')
+        }.width('100%')
+      }.type(ButtonType.Normal).width('100%').height(48)
+        .backgroundColor(this.dark ? '#20271E' : '#EBF1E8').borderRadius(14)
+        .onClick((): void => { this.drawer = false; this.addingGroup = true; })
       Blank()
       if (this.privateOpen) {
         Button() {
@@ -818,6 +850,7 @@ struct Index {
         .backgroundColor(this.dark ? '#252B24' : '#E9EDE7')
         .onChange((value: string): void => { this.search = value; })
         .margin({ left: 16, right: 16, bottom: 12 })
+      Stack({ alignContent: Alignment.Bottom }) {
       WaterFlow({ scroller: this.listScroller }) {
         ForEach(this.visibleNotes(), (note: NativeNote) => {
           FlowItem() {
@@ -848,7 +881,7 @@ struct Index {
           }
         }, (note: NativeNote): string => note.id)
       }.columnsTemplate(this.tablet || this.listLayout ? '1fr' : '1fr 1fr').columnsGap(10).rowsGap(10)
-        .layoutWeight(1).padding({ left: 14, right: 14 })
+        .width('100%').height('100%').padding({ left: 14, right: 14, bottom: 92 })
       if (this.selectionMode) {
         Row({ space: 10 }) {
           Button() {
@@ -880,6 +913,7 @@ struct Index {
       }.padding(6).backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
         .borderRadius(36).alignSelf(ItemAlign.Center).margin({ bottom: 16 })
       }
+      }.layoutWeight(1).width('100%')
     }.width(this.tablet ? 270 : '100%').height('100%').backgroundColor(this.dark ? '#171B16' : '#F5F7F2')
   }
 
@@ -999,29 +1033,30 @@ struct Index {
           .onReady((): void => { this.richReady = true; this.loadRich(); })
           .onFocus((): void => { this.editingMode = true; })
           .onDidChange((): void => this.changedRich())
+          .onSelectionChange((): void => this.refreshRichActive())
         if (this.editingMode) {
         Scroll() {
           Row({ space: 8 }) {
             Button('H').fontColor(this.dark ? '#D8DED4' : '#141914')
-              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+              .backgroundColor(this.richActive.includes('heading') ? '#DDF4D5' : (this.dark ? '#252B24' : '#FFFFFF'))
               .onClick((): void => this.formatRich('heading'))
             Button('B').fontColor(this.dark ? '#D8DED4' : '#141914')
-              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+              .backgroundColor(this.richActive.includes('bold') ? '#DDF4D5' : (this.dark ? '#252B24' : '#FFFFFF'))
               .onClick((): void => this.formatRich('bold'))
             Button('I').fontColor(this.dark ? '#D8DED4' : '#141914')
-              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+              .backgroundColor(this.richActive.includes('italic') ? '#DDF4D5' : (this.dark ? '#252B24' : '#FFFFFF'))
               .onClick((): void => this.formatRich('italic'))
             Button('U').fontColor(this.dark ? '#D8DED4' : '#141914')
-              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+              .backgroundColor(this.richActive.includes('underline') ? '#DDF4D5' : (this.dark ? '#252B24' : '#FFFFFF'))
               .onClick((): void => this.formatRich('underline'))
             Button('S').fontColor(this.dark ? '#D8DED4' : '#141914')
-              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+              .backgroundColor(this.richActive.includes('strike') ? '#DDF4D5' : (this.dark ? '#252B24' : '#FFFFFF'))
               .onClick((): void => this.formatRich('strike'))
             Button('M').fontColor(this.dark ? '#D8DED4' : '#141914')
-              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+              .backgroundColor(this.richActive.includes('highlight') ? '#DDF4D5' : (this.dark ? '#252B24' : '#FFFFFF'))
               .onClick((): void => this.formatRich('highlight'))
             Button('❝').fontColor(this.dark ? '#D8DED4' : '#141914')
-              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+              .backgroundColor(this.richActive.includes('quote') ? '#DDF4D5' : (this.dark ? '#252B24' : '#FFFFFF'))
               .onClick((): void => this.formatRich('quote'))
           }
         }.scrollable(ScrollDirection.Horizontal).width('100%').padding(12)
@@ -1068,7 +1103,7 @@ struct Index {
       Button('取消').width('100%').fontColor(this.dark ? '#A4AFA1' : '#677166')
         .backgroundColor(this.dark ? '#303830' : '#F4F6F2').borderRadius(16)
         .onClick((): void => { this.noteOptions = false; this.movingGroup = false; })
-    }.width(this.tablet ? 480 : '100%').padding(20).borderRadius(28)
+    }.width(this.tablet ? 480 : '92%').padding(20).borderRadius(28)
       .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
       .alignSelf(ItemAlign.Center).margin({ bottom: 16 })
   }
@@ -1098,7 +1133,7 @@ struct Index {
       Button('取消').width('100%').fontColor(this.dark ? '#A4AFA1' : '#677166')
         .backgroundColor(this.dark ? '#303830' : '#F4F6F2').borderRadius(16)
         .onClick((): void => { this.branchOptionsId = ''; })
-    }.width(this.tablet ? 480 : '100%').padding(20).borderRadius(28)
+    }.width(this.tablet ? 480 : '92%').padding(20).borderRadius(28)
       .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
       .alignSelf(ItemAlign.Center).margin({ bottom: 16 })
   }
@@ -1164,10 +1199,10 @@ struct Index {
         Column({ space: 12 }) {
           if (this.settingsAbout) {
             Column({ space: 7 }) {
-              Text('拾页 · Native').fontSize(25).fontWeight(FontWeight.Bold)
+              Text('拾页 · Native').fontSize(25).fontWeight(FontWeight.Bold).width('100%').textAlign(TextAlign.Center)
                 .fontColor(this.dark ? '#D8DED4' : '#141914')
-              Text('给想法，留一页空白。').fontSize(15).fontColor(this.dark ? '#A4AFA1' : '#677166')
-              Text('by OpenALC').fontSize(12).fontColor(this.dark ? '#A4AFA1' : '#677166')
+              Text('给想法，留一页空白。').fontSize(15).fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%').textAlign(TextAlign.Center)
+              Text('by OpenALC').fontSize(12).fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%').textAlign(TextAlign.Center)
             }.width('100%').alignItems(HorizontalAlign.Center).padding({ top: 24, bottom: 30 })
             Text('应用信息').fontSize(14).fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%')
             this.aboutItem('当前版本', 'v0.1.0', $rawfile('nav_inbox.svg'), '')
@@ -1256,17 +1291,15 @@ struct Index {
       }
       if (this.homeOptions) {
         Column() {
-          Blank().layoutWeight(1).onClick((): void => { this.homeOptions = false; })
+          Blank().height(66).onClick((): void => { this.homeOptions = false; })
           Column({ space: 8 }) {
-            Text('更多').fontSize(23).fontWeight(FontWeight.Bold)
-              .fontColor(this.dark ? '#D8DED4' : '#141914').width('100%').padding({ bottom: 12 })
             Button() {
               Row({ space: 12 }) {
                 Image($rawfile('nav_plus.svg')).width(20).height(20)
                 Text('新建分组').fontSize(17).fontColor(this.dark ? '#D8DED4' : '#141914')
               }.width('100%')
             }.type(ButtonType.Normal).width('100%').backgroundColor(this.dark ? '#303830' : '#F4F6F2')
-              .borderRadius(16).onClick((): void => { this.homeOptions = false; this.drawer = true; this.addingGroup = true; })
+              .borderRadius(16).onClick((): void => { this.homeOptions = false; this.addingGroup = true; })
             Button() {
               Row({ space: 12 }) {
                 Image($rawfile('nav_lock.svg')).width(20).height(20)
@@ -1274,13 +1307,34 @@ struct Index {
               }.width('100%')
             }.type(ButtonType.Normal).width('100%').backgroundColor(this.dark ? '#303830' : '#F4F6F2')
               .borderRadius(16).onClick((): void => { this.homeOptions = false; this.enterPrivate(); })
-            Button('取消').width('100%').fontColor(this.dark ? '#A4AFA1' : '#677166')
-              .backgroundColor(this.dark ? '#303830' : '#F4F6F2').borderRadius(16)
-              .onClick((): void => { this.homeOptions = false; })
-          }.width(this.tablet ? 480 : '100%').padding(20).borderRadius(28)
+          }.width(this.tablet ? 240 : '60%').padding(10).borderRadius(22)
             .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
-            .alignSelf(ItemAlign.Center).margin({ bottom: 16 })
-        }.width('100%').height('100%').backgroundColor('#66000000')
+            .alignSelf(ItemAlign.End).margin({ right: 16 })
+            .transition(TransitionEffect.OPACITY.animation({ duration: 180 }).combine(TransitionEffect.scale({ x: 0.82, y: 0.82 }).animation({ duration: 220 })))
+          Blank().layoutWeight(1).onClick((): void => { this.homeOptions = false; })
+        }.width('100%').height('100%').backgroundColor('#22000000')
+      }
+      if (this.addingGroup) {
+        Column() {
+          Column({ space: 18 }) {
+            Text('新建分组').fontSize(22).fontWeight(FontWeight.Bold)
+              .fontColor(this.dark ? '#D8DED4' : '#141914').width('100%')
+            TextInput({ placeholder: '分组名称', text: this.groupName })
+              .fontColor(this.dark ? '#D8DED4' : '#141914')
+              .placeholderColor(this.dark ? '#A4AFA1' : '#677166')
+              .backgroundColor(this.dark ? '#303830' : '#F4F6F2')
+              .onChange((value: string): void => { this.groupName = value; })
+            Row({ space: 12 }) {
+              Button('取消').layoutWeight(1).fontColor(this.dark ? '#D8DED4' : '#141914')
+                .backgroundColor(this.dark ? '#303830' : '#F4F6F2')
+                .onClick((): void => { this.addingGroup = false; this.groupName = ''; })
+              Button('创建').layoutWeight(1).fontColor('#141914').backgroundColor('#54D81B')
+                .onClick((): void => this.addGroup())
+            }.width('100%')
+          }.width(this.tablet ? 420 : '88%').padding(24).borderRadius(24)
+            .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+        }.width('100%').height('100%').justifyContent(FlexAlign.Center)
+          .alignItems(HorizontalAlign.Center).backgroundColor('#66000000')
       }
       if (this.layoutChoiceOpen) {
         Column() {
@@ -1293,7 +1347,7 @@ struct Index {
             Button('取消').width('100%').fontColor(this.dark ? '#A4AFA1' : '#677166')
               .backgroundColor(this.dark ? '#303830' : '#F4F6F2').borderRadius(16)
               .onClick((): void => { this.layoutChoiceOpen = false; })
-          }.width(this.tablet ? 480 : '100%').padding(20).borderRadius(28)
+          }.width(this.tablet ? 480 : '92%').padding(20).borderRadius(28)
             .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
             .alignSelf(ItemAlign.Center).margin({ bottom: 16 })
         }.width('100%').height('100%').backgroundColor('#66000000')
@@ -1309,7 +1363,7 @@ struct Index {
             Button('取消').width('100%').fontColor(this.dark ? '#A4AFA1' : '#677166')
               .backgroundColor(this.dark ? '#303830' : '#F4F6F2').borderRadius(16)
               .onClick((): void => { this.themeChoiceOpen = false; })
-          }.width(this.tablet ? 480 : '100%').padding(20).borderRadius(28)
+          }.width(this.tablet ? 480 : '92%').padding(20).borderRadius(28)
             .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
             .alignSelf(ItemAlign.Center).margin({ bottom: 16 })
         }.width('100%').height('100%').backgroundColor('#66000000')
@@ -1344,7 +1398,7 @@ struct Index {
             Button('取消').width('100%').fontColor(this.dark ? '#A4AFA1' : '#677166')
               .backgroundColor(this.dark ? '#303830' : '#F4F6F2').borderRadius(16)
               .onClick((): void => { this.batchMoveOpen = false; this.batchDeleteOpen = false; })
-          }.width(this.tablet ? 480 : '100%').padding(20).borderRadius(28)
+          }.width(this.tablet ? 480 : '92%').padding(20).borderRadius(28)
             .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
             .alignSelf(ItemAlign.Center).margin({ bottom: 16 })
         }.width('100%').height('100%').backgroundColor('#66000000')
