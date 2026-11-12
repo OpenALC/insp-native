@@ -95,9 +95,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var headerLayoutIcon: NativeIcon
     private lateinit var headerMoreIcon: NativeIcon
     private lateinit var composeBar: LinearLayout
-    private lateinit var composeNoteButton: TextView
-    private lateinit var composeMindButton: TextView
-    private lateinit var composeTodoButton: View
+    private lateinit var composeNoteButton: LinearLayout
+    private lateinit var composeMindButton: LinearLayout
+    private lateinit var composeNoteLabel: TextView
+    private lateinit var composeMindLabel: TextView
+    private lateinit var todoHeaderTab: TextView
+    private var todoPage: TodoPage? = null
     private var composeCompact = false
     private var composeAnimator: ValueAnimator? = null
     private lateinit var selectionBar: LinearLayout
@@ -110,6 +113,7 @@ class MainActivity : AppCompatActivity() {
     private var homeMenuOverlay: FrameLayout? = null
     private var settingsOverlay: LinearLayout? = null
     private var settingsParent: LinearLayout? = null
+    private var licenseOverlay: LinearLayout? = null
     private var aboutOpen = false
     private var selectedCard: View? = null
     private var active: NativeNote? = null
@@ -187,6 +191,7 @@ class MainActivity : AppCompatActivity() {
             val ime = insets.getInsets(WindowInsets.Type.ime())
             home.setPadding(0, bars.top, 0, bars.bottom)
             editor.setPadding(0, bars.top, 0, maxOf(bars.bottom, ime.bottom))
+            todoPage?.setPadding(0, bars.top, 0, bars.bottom)
             tabletSidebar?.setPadding(0, bars.top, 0, bars.bottom)
             insets
         }
@@ -200,7 +205,9 @@ class MainActivity : AppCompatActivity() {
                     return
                 }
                 when {
+                    todoPage != null -> { if (todoPage?.handleBack() != true) closeTodos() }
                     homeMenuOverlay != null -> closeHomeMenu()
+                    licenseOverlay != null -> closeLicenses()
                     settingsOverlay != null -> closeSettings()
                     drawerOverlay != null -> closeDrawer()
                     selectionMode -> clearSelection()
@@ -216,6 +223,26 @@ class MainActivity : AppCompatActivity() {
         window.insetsController?.setSystemBarsAppearance(appearance,
             android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS)
         refresh()
+        if (intent.getBooleanExtra("open_todos", false)) openTodos()
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        if (intent.getBooleanExtra("open_todos", false)) openTodos()
+    }
+
+    private fun openTodos() {
+        if (todoPage != null) return
+        val page = TodoPage(this, store, Accent.color(this), dark) { closeTodos() }
+        todoPage = page
+        root.addView(page, FrameLayout.LayoutParams(-1, -1))
+        val bars = root.rootWindowInsets?.getInsets(WindowInsets.Type.systemBars())
+        if (bars != null) page.setPadding(0, bars.top, 0, bars.bottom)
+    }
+
+    private fun closeTodos() {
+        todoPage?.let(root::removeView)
+        todoPage = null
     }
 
     private fun buildHome(): LinearLayout {
@@ -226,7 +253,13 @@ class MainActivity : AppCompatActivity() {
             text = "笔记"; textSize = 29f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink)
             setPadding(dp(10), 0, 0, 0)
         }
-        header.addView(headerTitle, LinearLayout.LayoutParams(0, -2, 1f))
+        header.addView(headerTitle, LinearLayout.LayoutParams(-2, -2))
+        todoHeaderTab = TextView(this).apply {
+            text = "待办"; textSize = 20f; setTextColor(secondary); gravity = Gravity.CENTER
+            tapFeedback(); setOnClickListener { openTodos() }
+        }
+        header.addView(todoHeaderTab, LinearLayout.LayoutParams(-2, dp(48)).apply { leftMargin = dp(15) })
+        header.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
         headerLayoutButton = FrameLayout(this).apply { tapFeedback(); setOnClickListener {
             if (selectionMode) {
                 val visible = allNotes.filter { (groupId == null || if (groupId == "") it.groupId == null else it.groupId == groupId) &&
@@ -300,20 +333,12 @@ class MainActivity : AppCompatActivity() {
             background = rounded(paper, 36)
             elevation = dp(8).toFloat()
         }
-        val expanded = dp(if (tablet) 105 else 125)
-        composeNoteButton = pill("笔记") { create("richtext") }.apply {
-            val icon = androidx.core.content.ContextCompat.getDrawable(this@MainActivity, R.drawable.ic_note)!!
-                .mutate().apply { setTint(ink); setBounds(0, 0, dp(21), dp(21)) }
-            setCompoundDrawablesRelative(icon, null, null, null)
-            compoundDrawablePadding = dp(7)
-        }
-        composeMindButton = pill("⌘  灵感笔记") { create("mindmap") }
+        val expanded = dp(if (tablet) 105 else 145)
+        composeNoteButton = composeAction("笔记", R.drawable.ic_note, true) { create("richtext") }
+        composeMindButton = composeAction("灵感笔记", R.drawable.ic_mind_tree, false) { create("mindmap") }
         composeBar.addView(composeNoteButton, LinearLayout.LayoutParams(expanded, dp(48)))
         composeBar.addView(View(this).apply { setBackgroundColor(secondary) }, LinearLayout.LayoutParams(dp(1), dp(22)).apply { leftMargin = dp(5); rightMargin = dp(5) })
         composeBar.addView(composeMindButton, LinearLayout.LayoutParams(expanded, dp(48)))
-        composeBar.addView(View(this).apply { setBackgroundColor(secondary) }, LinearLayout.LayoutParams(dp(1), dp(22)).apply { leftMargin = dp(5); rightMargin = dp(5) })
-        composeTodoButton = iconButton("checklist") { create("todo") }.apply { contentDescription = "新建待办清单" }
-        composeBar.addView(composeTodoButton, LinearLayout.LayoutParams(dp(48), dp(48)))
         cardSurface.addView(composeBar, FrameLayout.LayoutParams(-2, dp(60), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(18) })
         selectionBar = LinearLayout(this).apply {
             gravity = Gravity.CENTER; setPadding(dp(8), dp(8), dp(8), dp(8)); visibility = View.GONE
@@ -341,6 +366,7 @@ class MainActivity : AppCompatActivity() {
         headerLayoutAction.visibility = View.VISIBLE; headerLayoutIcon.visibility = View.GONE
         headerAction.visibility = View.VISIBLE; headerMoreIcon.visibility = View.GONE
         composeBar.visibility = View.GONE
+        todoHeaderTab.visibility = View.GONE
         selectionBar.visibility = View.VISIBLE
     }
 
@@ -350,6 +376,7 @@ class MainActivity : AppCompatActivity() {
         headerLayoutAction.visibility = View.GONE; headerLayoutIcon.visibility = View.VISIBLE
         headerAction.visibility = View.GONE; headerMoreIcon.visibility = View.VISIBLE
         composeBar.visibility = View.VISIBLE; selectionBar.visibility = View.GONE
+        todoHeaderTab.visibility = View.VISIBLE
         setComposeCompact(false)
         cardAdapter.selectionChangedAll()
     }
@@ -360,7 +387,7 @@ class MainActivity : AppCompatActivity() {
         composeAnimator?.cancel()
         val start = composeNoteButton.layoutParams.width
         val end = dp(if (compact) 48 else if (tablet) 105 else 145)
-        if (compact) { composeNoteButton.text = ""; composeMindButton.text = "⌘" }
+        if (compact) { composeNoteLabel.visibility = View.GONE; composeMindLabel.visibility = View.GONE }
         composeAnimator = ValueAnimator.ofInt(start, end).apply {
             duration = if (compact) 170 else 280
             if (!compact) interpolator = OvershootInterpolator(1.15f)
@@ -372,7 +399,7 @@ class MainActivity : AppCompatActivity() {
             if (!compact) addListener(object : android.animation.AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: android.animation.Animator) {
                     if (!composeCompact) {
-                        composeNoteButton.text = "笔记"; composeMindButton.text = "⌘  灵感笔记"
+                        composeNoteLabel.visibility = View.VISIBLE; composeMindLabel.visibility = View.VISIBLE
                     }
                 }
             })
@@ -1654,21 +1681,62 @@ class MainActivity : AppCompatActivity() {
         }
         settingsRow(content, "GitHub 仓库", "OpenALC/insp-native") { openUrl("https://github.com/OpenALC/insp-native") }
         settingsRow(content, "开源协议", "MIT") { openUrl("https://github.com/OpenALC/insp-native/blob/main/LICENSE") }
-        content.addView(TextView(this).apply { text = "开源组件声明"; textSize = 14f; setTextColor(secondary); setPadding(dp(8), dp(20), 0, dp(6)) })
+        settingsRow(content, "开源组件声明") { openLicenses() }
+        content.addView(TextView(this).apply {
+            text = "拾页 · Native\n给想法，留一页空白。\nOpenALC · MIT"
+            textSize = 13f; setTextColor(secondary); gravity = Gravity.CENTER
+            setPadding(dp(8), dp(22), dp(8), dp(18))
+        })
+        root.addView(page, FrameLayout.LayoutParams(-1, -1))
+        page.alpha = 0f; page.translationX = dp(24).toFloat()
+        page.animate().alpha(1f).translationX(0f).setDuration(220).start()
+    }
+
+    private fun openLicenses() {
+        val page = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setBackgroundColor(this@MainActivity.background)
+            val bars = root.rootWindowInsets?.getInsets(WindowInsets.Type.systemBars())
+            setPadding(dp(16), bars?.top ?: 0, dp(16), bars?.bottom ?: 0)
+        }
+        licenseOverlay = page
+        val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        header.addView(action("‹") { closeLicenses() }, LinearLayout.LayoutParams(dp(48), dp(54)))
+        header.addView(TextView(this).apply {
+            text = "开源组件声明"; textSize = 22f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink)
+        })
+        page.addView(header)
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        page.addView(ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false; addView(content)
+        }, LinearLayout.LayoutParams(-1, 0, 1f))
+        val headings = LinearLayout(this).apply {
+            setPadding(dp(10), dp(18), dp(10), dp(8))
+        }
+        for ((label, weight) in listOf("组件" to 3f, "仓库地址" to 5f, "协议" to 2f)) {
+            headings.addView(TextView(this).apply { text = label; textSize = 12f; setTextColor(secondary) },
+                LinearLayout.LayoutParams(0, -2, weight))
+        }
+        content.addView(headings)
         for ((name, url, license) in listOf(
             Triple("AndroidX AppCompat", "https://github.com/androidx/androidx", "Apache-2.0"),
             Triple("AndroidX Activity / Core / Transition", "https://github.com/androidx/androidx", "Apache-2.0"),
             Triple("AndroidX RecyclerView", "https://github.com/androidx/androidx", "Apache-2.0"),
             Triple("Material Components", "https://github.com/material-components/material-components-android", "Apache-2.0"),
             Triple("Kotlin", "https://github.com/JetBrains/kotlin", "Apache-2.0"),
+            Triple("OpenHarmony ArkUI", "https://gitee.com/openharmony/arkui_ace_engine", "Apache-2.0"),
+            Triple("OpenHarmony ArkTS", "https://gitee.com/openharmony/arkcompiler_ets_frontend", "Apache-2.0"),
+            Triple("Lucide Icons", "https://github.com/lucide-icons/lucide", "ISC"),
         )) openSourceRow(content, name, url, license)
-        content.addView(TextView(this).apply {
-            text = "拾页 Native 使用 Android、HarmonyOS 原生组件构建。完整源码、许可证及更新记录请见 GitHub 仓库。"
-            textSize = 13f; setTextColor(secondary); setPadding(dp(8), dp(22), dp(8), 0)
-        })
         root.addView(page, FrameLayout.LayoutParams(-1, -1))
         page.alpha = 0f; page.translationX = dp(24).toFloat()
         page.animate().alpha(1f).translationX(0f).setDuration(220).start()
+    }
+
+    private fun closeLicenses() {
+        val page = licenseOverlay ?: return
+        licenseOverlay = null
+        page.animate().alpha(0f).translationX(dp(24).toFloat()).setDuration(190)
+            .withEndAction { root.removeView(page) }.start()
     }
 
     private fun chooseAccent() {
@@ -1705,15 +1773,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun openSourceRow(content: LinearLayout, name: String, url: String, license: String) {
         val row = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(12), dp(18), dp(12))
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), dp(14), dp(10), dp(14))
             background = rounded(paper, 17)
             tapFeedback()
             setOnClickListener { openUrl(url) }
         }
-        row.addView(TextView(this).apply { text = name; textSize = 16f; setTextColor(ink) })
-        row.addView(TextView(this).apply { text = license; textSize = 13f; setTextColor(secondary) })
-        row.addView(TextView(this).apply { text = url; textSize = 12f; setTextColor(secondary); maxLines = 2 })
+        row.addView(TextView(this).apply { text = name; textSize = 12f; setTextColor(ink) }, LinearLayout.LayoutParams(0, -2, 3f))
+        row.addView(TextView(this).apply { text = url; textSize = 11f; setTextColor(secondary); maxLines = 3 }, LinearLayout.LayoutParams(0, -2, 5f))
+        row.addView(TextView(this).apply { text = license; textSize = 11f; setTextColor(secondary) }, LinearLayout.LayoutParams(0, -2, 2f))
         content.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(7) })
     }
 
@@ -1771,7 +1839,8 @@ class MainActivity : AppCompatActivity() {
     private inner class Cards : RecyclerView.Adapter<Cards.Holder>() {
         private var notes = listOf<NativeNote>()
 
-        inner class Holder(val card: MaterialCardView, val title: TextView, val image: ImageView, val preview: TextView, val mark: TextView) : RecyclerView.ViewHolder(card)
+        inner class Holder(val card: MaterialCardView, val title: TextView, val image: ImageView,
+            val preview: TextView, val modified: TextView, val mark: TextView) : RecyclerView.ViewHolder(card)
 
         fun submit(items: List<NativeNote>) {
             val previous = notes
@@ -1784,7 +1853,8 @@ class MainActivity : AppCompatActivity() {
                 override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
                     val old = previous[oldItemPosition]
                     val new = next[newItemPosition]
-                    return old.title == new.title && old.body == new.body && old.groupId == new.groupId && old.private == new.private
+                    return old.title == new.title && old.body == new.body && old.groupId == new.groupId &&
+                        old.private == new.private && old.updatedAt == new.updatedAt
                 }
             })
             notes = next
@@ -1815,16 +1885,18 @@ class MainActivity : AppCompatActivity() {
                 visibility = View.GONE
             }
             val preview = TextView(this@MainActivity).apply { textSize = 14f; setTextColor(secondary); maxLines = 5; setLineSpacing(dp(3).toFloat(), 1f) }
+            val modified = TextView(this@MainActivity).apply { textSize = 11f; setTextColor(secondary) }
             content.addView(title)
             content.addView(image, LinearLayout.LayoutParams(-1, dp(120)).apply { topMargin = dp(12) })
             content.addView(preview, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+            content.addView(modified, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
             card.addView(content)
             val mark = TextView(this@MainActivity).apply { textSize = 15f; gravity = Gravity.CENTER; visibility = View.GONE }
             card.addView(mark, FrameLayout.LayoutParams(dp(28), dp(28), Gravity.END or Gravity.TOP).apply {
                 topMargin = dp(10); rightMargin = dp(10)
             })
             card.layoutParams = RecyclerView.LayoutParams(-1, -2).apply { setMargins(dp(7), dp(6), dp(7), dp(6)) }
-            return Holder(card, title, image, preview, mark)
+            return Holder(card, title, image, preview, modified, mark)
         }
 
         override fun onBindViewHolder(holder: Holder, position: Int) {
@@ -1838,6 +1910,8 @@ class MainActivity : AppCompatActivity() {
                 setStroke(dp(1), if (note.id in selectedIds) green else secondary)
             }
             holder.title.text = note.title
+            holder.modified.text = java.text.DateFormat.getDateTimeInstance(
+                java.text.DateFormat.SHORT, java.text.DateFormat.SHORT).format(note.updatedAt)
             holder.preview.text = if (note.kind != "mindmap") {
                 RichTextCodec.decode(note.body, dark, green).apply {
                     for (index in length - 1 downTo 0) if (this[index] == '\uFFFC') replace(index, index + 1, "")
@@ -1890,11 +1964,19 @@ class MainActivity : AppCompatActivity() {
         addView(NativeIcon(this@MainActivity, icon, ink), FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER))
     }
 
-    private fun pill(label: String, click: () -> Unit) = TextView(this).apply {
-        text = label; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink); gravity = Gravity.CENTER
-        background = rounded(if (label.contains("灵感")) paper else greenSoft, 28)
+    private fun composeAction(label: String, icon: Int, selected: Boolean, click: () -> Unit) = LinearLayout(this).apply {
+        gravity = Gravity.CENTER
+        background = rounded(if (selected) greenSoft else paper, 28)
         tapFeedback()
         setOnClickListener { click() }
+        addView(ImageView(this@MainActivity).apply {
+            setImageResource(icon); setColorFilter(ink)
+        }, LinearLayout.LayoutParams(dp(21), dp(21)))
+        val caption = TextView(this@MainActivity).apply {
+            text = label; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink)
+        }
+        addView(caption, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(7) })
+        if (selected) composeNoteLabel = caption else composeMindLabel = caption
     }
 
     private fun rounded(color: Int, radius: Int) = GradientDrawable().apply {

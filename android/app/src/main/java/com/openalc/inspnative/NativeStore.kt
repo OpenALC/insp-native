@@ -28,7 +28,17 @@ data class NativeNote(
     var updatedAt: Long,
 )
 
-class NativeStore(context: Context) : SQLiteOpenHelper(context, "insp-native.db", null, 1) {
+data class NativeTodo(
+    val id: String,
+    var text: String,
+    var completed: Boolean,
+    var remindAt: Long?,
+    var repeat: String,
+    val createdAt: Long,
+    var updatedAt: Long,
+)
+
+class NativeStore(context: Context) : SQLiteOpenHelper(context, "insp-native.db", null, 2) {
     private val vault = context.getSharedPreferences("private-vault", Context.MODE_PRIVATE)
     private var privateSessionKey: SecretKey? = null
     private val localKey by lazy { loadDeviceKey(false) }
@@ -38,11 +48,38 @@ class NativeStore(context: Context) : SQLiteOpenHelper(context, "insp-native.db"
         db.execSQL("CREATE TABLE groups (id TEXT PRIMARY KEY, name BLOB NOT NULL, position INTEGER NOT NULL)")
         db.execSQL("CREATE TABLE notes (id TEXT PRIMARY KEY, kind TEXT NOT NULL, group_id TEXT, private INTEGER NOT NULL, title BLOB NOT NULL, body BLOB NOT NULL, updated_at INTEGER NOT NULL)")
         db.execSQL("CREATE TABLE attachments (id TEXT PRIMARY KEY, note_id TEXT NOT NULL, mime_type TEXT NOT NULL, payload BLOB NOT NULL)")
+        db.execSQL("CREATE TABLE todos (id TEXT PRIMARY KEY, payload BLOB NOT NULL, updated_at INTEGER NOT NULL)")
         db.execSQL("CREATE INDEX notes_order ON notes(updated_at DESC)")
         db.execSQL("CREATE INDEX notes_group ON notes(group_id)")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) db.execSQL("CREATE TABLE todos (id TEXT PRIMARY KEY, payload BLOB NOT NULL, updated_at INTEGER NOT NULL)")
+    }
+
+    fun todos(): List<NativeTodo> {
+        val result = mutableListOf<NativeTodo>()
+        readableDatabase.rawQuery("SELECT id, payload FROM todos ORDER BY updated_at DESC", null).use { cursor ->
+            while (cursor.moveToNext()) {
+                val data = JSONObject(open(cursor.getBlob(1)))
+                result += NativeTodo(cursor.getString(0), data.getString("text"), data.getBoolean("completed"),
+                    data.optLong("remindAt").takeIf { it > 0 }, data.optString("repeat", "none"),
+                    data.getLong("createdAt"), data.getLong("updatedAt"))
+            }
+        }
+        return result
+    }
+
+    fun saveTodo(todo: NativeTodo) {
+        val payload = JSONObject().put("text", todo.text).put("completed", todo.completed)
+            .put("remindAt", todo.remindAt ?: 0).put("repeat", todo.repeat)
+            .put("createdAt", todo.createdAt).put("updatedAt", todo.updatedAt).toString()
+        writableDatabase.insertWithOnConflict("todos", null, ContentValues().apply {
+            put("id", todo.id); put("payload", seal(payload)); put("updated_at", todo.updatedAt)
+        }, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    fun deleteTodo(id: String) { writableDatabase.delete("todos", "id=?", arrayOf(id)) }
 
     fun unlockPrivate() {
         val wrapped = vault.getString("wrapped-key", null)

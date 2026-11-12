@@ -24,10 +24,22 @@ export interface NativeNote {
   viewMode?: string;
 }
 
+export interface NativeTodo {
+  id: string;
+  text: string;
+  completed: boolean;
+  remindAt: number | null;
+  repeat: string;
+  createdAt: number;
+  updatedAt: number;
+  reminderId?: number;
+}
+
 export class NativeStore {
   private readonly security: DeviceSecurity;
   groups: NoteGroup[] = [];
   notes: NativeNote[] = [];
+  todos: NativeTodo[] = [];
   privateNotes: NativeNote[] = [];
   dark: boolean = false;
   listLayout: boolean = false;
@@ -45,6 +57,7 @@ export class NativeStore {
       const data = JSON.parse(normal) as WorkspaceData;
       store.groups = data.groups;
       store.notes = data.notes;
+      store.todos = data.todos ?? [];
       store.dark = data.dark ?? false;
       store.listLayout = data.listLayout ?? false;
       store.accent = data.accent ?? '#54D81B';
@@ -61,12 +74,16 @@ export class NativeStore {
     return true;
   }
 
+  privateAuthAvailable(): boolean {
+    return this.security.authStatus();
+  }
+
   lockPrivate(): void {
     this.privateNotes = [];
   }
 
   saveNormal(): Promise<void> {
-    const value = JSON.stringify({ groups: this.groups, notes: this.notes, dark: this.dark, listLayout: this.listLayout, accent: this.accent });
+    const value = JSON.stringify({ groups: this.groups, notes: this.notes, todos: this.todos, dark: this.dark, listLayout: this.listLayout, accent: this.accent });
     this.pending = this.pending.then((): Promise<void> => this.security.setSecret('native-workspace-v1', value));
     return this.pending;
   }
@@ -90,6 +107,7 @@ export class NativeStore {
 interface WorkspaceData {
   groups: NoteGroup[];
   notes: NativeNote[];
+  todos?: NativeTodo[];
   dark?: boolean;
   listLayout?: boolean;
   accent?: string;

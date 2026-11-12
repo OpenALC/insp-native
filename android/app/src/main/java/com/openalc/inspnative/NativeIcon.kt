@@ -39,6 +39,7 @@ class NativeIcon(context: Context, private val name: String, color: Int) : View(
             "back" -> line(15f, 4f, 7f, 12f, 15f, 20f)
             "next" -> line(9f, 4f, 17f, 12f, 9f, 20f)
             "check" -> line(4f, 12f, 10f, 18f, 20f, 6f)
+            "clock" -> { circle(12f, 12f, 9f); line(12f, 6f, 12f, 12f, 16f, 14f) }
             "indent" -> { line(3f, 6f, 21f, 6f); line(11f, 11f, 21f, 11f); line(11f, 16f, 21f, 16f); line(3f, 11f, 7f, 14f, 3f, 17f) }
             "outdent" -> { line(3f, 6f, 21f, 6f); line(11f, 11f, 21f, 11f); line(11f, 16f, 21f, 16f); line(7f, 11f, 3f, 14f, 7f, 17f) }
             "sibling" -> { line(5f, 5f, 5f, 19f, 11f, 19f); line(10f, 14f, 10f, 21f); line(7f, 17.5f, 13f, 17.5f) }
