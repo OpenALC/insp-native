@@ -52,6 +52,9 @@ struct Index {
   @State private editingTreeText: string = '';
   @State private branchOptionsId: string = '';
   @State private dark: boolean = false;
+  @State private accent: string = '#54D81B';
+  @State private accentDraft: string = '#54D81B';
+  @State private accentChoiceOpen: boolean = false;
   @State private listLayout: boolean = false;
   @State private selectionMode: boolean = false;
   @State private selectedIds: string[] = [];
@@ -92,6 +95,8 @@ struct Index {
     NativeStore.open(getContext(this) as common.UIAbilityContext).then((store: NativeStore): void => {
       this.store = store;
       this.dark = store.dark;
+      this.accent = store.accent;
+      this.accentDraft = store.accent;
       this.listLayout = store.listLayout;
       this.syncSystemBars();
       this.refresh();
@@ -116,6 +121,57 @@ struct Index {
     (getContext(this) as common.UIAbilityContext).openLink(link);
   }
 
+  private mixAccent(background: string, ratio: number): string {
+    let result = '#';
+    for (const offset of [1, 3, 5]) {
+      const foreground = parseInt(this.accent.slice(offset, offset + 2), 16);
+      const base = parseInt(background.slice(offset, offset + 2), 16);
+      result += Math.round(foreground * ratio + base * (1 - ratio)).toString(16).padStart(2, '0');
+    }
+    return result;
+  }
+
+  private accentSurface(): string {
+    return this.mixAccent(this.dark ? '#252B24' : '#FFFFFF', this.dark ? .18 : .13);
+  }
+
+  private highlightColor(): string { return '#66' + this.accent.slice(1); }
+
+  private toggleTodo(): void {
+    const offset = this.richController.getSelection().selection[0];
+    const content = this.richController.getSpans().map((part: RichEditorTextSpanResult | RichEditorImageSpanResult): string =>
+      typeof (part as RichEditorTextSpanResult).value === 'string' ? (part as RichEditorTextSpanResult).value : '').join('');
+    const start = content.lastIndexOf('\n', Math.max(0, offset - 1)) + 1;
+    const current = content.slice(start);
+    const lineEnd = content.indexOf('\n', start) === -1 ? content.length : content.indexOf('\n', start);
+    if (current.startsWith('☐ ')) {
+      this.richController.deleteSpans({ start: start, end: start + 1 });
+      this.richController.addTextSpan('☑', { offset: start });
+      if (lineEnd > start + 2) this.richController.updateSpanStyle({ start: start + 2, end: lineEnd,
+        textStyle: { fontColor: this.dark ? '#A4AFA1' : '#777E77', decoration: { type: TextDecorationType.LineThrough } } });
+    } else if (current.startsWith('☑ ')) {
+      this.richController.deleteSpans({ start: start, end: start + 1 });
+      this.richController.addTextSpan('☐', { offset: start });
+      if (lineEnd > start + 2) this.richController.updateSpanStyle({ start: start + 2, end: lineEnd,
+        textStyle: { fontColor: this.dark ? '#D8DED4' : '#141914', decoration: { type: TextDecorationType.None } } });
+    } else {
+      this.richController.addTextSpan('☐ ', { offset: start });
+      this.richController.setCaretOffset(offset + 2);
+    }
+    this.changedRich();
+  }
+
+  private saveAccent(value: string): void {
+    if (!/^#[0-9a-fA-F]{6}$/.test(value)) {
+      promptAction.showToast({ message: '请输入 #RRGGBB 格式的颜色' });
+      return;
+    }
+    this.accent = value.toUpperCase();
+    this.accentDraft = this.accent;
+    this.accentChoiceOpen = false;
+    if (this.store !== null) { this.store.accent = this.accent; this.store.saveNormal(); }
+  }
+
   aboutToDisappear(): void {
     this.saveNow();
     this.store?.flush().then((): void => { this.store?.close(); });
@@ -130,9 +186,10 @@ struct Index {
     if (this.addingGroup) {
       this.addingGroup = false;
       this.groupName = '';
-    } else if (this.themeChoiceOpen || this.layoutChoiceOpen) {
+    } else if (this.themeChoiceOpen || this.layoutChoiceOpen || this.accentChoiceOpen) {
       this.themeChoiceOpen = false;
       this.layoutChoiceOpen = false;
+      this.accentChoiceOpen = false;
     } else if (this.batchMoveOpen || this.batchDeleteOpen) {
       this.batchMoveOpen = false; this.batchDeleteOpen = false;
     } else if (this.branchOptionsId !== '') {
@@ -233,14 +290,14 @@ struct Index {
     this.activeId = note.id;
     this.title = note.title;
     this.body = note.body;
-    this.treeMode = note.kind === 'mindmap';
+    this.treeMode = note.kind === 'mindmap' && note.viewMode === 'tree';
     this.selectedBranchId = note.kind === 'mindmap' ? (JSON.parse(note.body) as MindDocument).root.id : '';
     this.noteOptions = false;
     this.movingGroup = false;
     this.refreshBranches();
     this.drawer = false;
     this.settings = false;
-    if (note.kind === 'richtext') {
+    if (note.kind !== 'mindmap') {
       const id = note.id;
       setTimeout((): void => { if (this.activeId === id) this.loadRich(); }, 0);
     }
@@ -276,8 +333,8 @@ struct Index {
     }
     const note = this.activeNote();
     if (note === null) return;
-    if (note.kind === 'richtext' && this.richReady) this.body = this.snapshotRich();
-    note.title = this.title.trim() || (note.kind === 'mindmap' ? '未命名的灵感笔记' : '未命名笔记');
+    if (note.kind !== 'mindmap' && this.richReady) this.body = this.snapshotRich();
+    note.title = this.title.trim() || (note.kind === 'mindmap' ? '未命名的灵感笔记' : note.kind === 'todo' ? '待办清单' : '未命名笔记');
     note.body = this.body;
     note.updatedAt = Date.now();
     this.storeSave();
@@ -289,7 +346,7 @@ struct Index {
   }
 
   private loadRich(): void {
-    if (!this.richReady || this.activeNote()?.kind !== 'richtext') return;
+    if (!this.richReady || this.activeNote()?.kind === 'mindmap') return;
     const document = readRich(this.body);
     this.richLoading = true;
     this.richController.deleteSpans();
@@ -305,14 +362,16 @@ struct Index {
       const heading = active.some((mark: RichMark): boolean => mark.type === 'heading');
       const highlight = active.some((mark: RichMark): boolean => mark.type === 'highlight');
       const quote = active.some((mark: RichMark): boolean => mark.type === 'quote');
+      const lineStart = document.text.lastIndexOf('\n', Math.max(0, start - 1)) + 1;
+      const completed = document.text.slice(lineStart).startsWith('☑ ');
       this.richController.addTextSpan(document.text.slice(start, end), {
         style: {
-          fontColor: quote ? (this.dark ? '#A4AFA1' : '#777E77') : (this.dark ? '#D8DED4' : '#141914'),
+          fontColor: quote || completed ? (this.dark ? '#A4AFA1' : '#777E77') : (this.dark ? '#D8DED4' : '#141914'),
           fontSize: heading ? 24 : (quote ? 16 : 18),
           fontWeight: bold ? FontWeight.Bold : FontWeight.Normal,
           fontStyle: italic ? FontStyle.Italic : FontStyle.Normal,
           decoration: { type: underline ? TextDecorationType.Underline : (strike ? TextDecorationType.LineThrough : TextDecorationType.None) },
-          textBackgroundStyle: { color: highlight ? '#6654D81B' : '#00000000', radius: 3 }
+          textBackgroundStyle: { color: highlight ? this.highlightColor() : '#00000000', radius: 3 }
         }
       });
     }
@@ -342,7 +401,7 @@ struct Index {
   }
 
   private highlighted(color: ResourceColor | undefined): boolean {
-    return color === '#6654D81B' || color === 0x6654D81B;
+    return color !== undefined && color !== '#00000000' && color !== 0;
   }
 
   private changedRich(): void {
@@ -386,6 +445,7 @@ struct Index {
   }
 
   private formatRich(kind: string): void {
+    if (kind === 'todo') { this.toggleTodo(); return; }
     const selection = this.richController.getSelection().selection;
     if (kind === 'quote' && selection[0] === selection[1]) {
       this.toggleQuoteMarker(selection[0]);
@@ -406,7 +466,7 @@ struct Index {
         next.fontColor = quoted ? (this.dark ? '#D8DED4' : '#141914') : (this.dark ? '#A4AFA1' : '#777E77');
       } else if (kind === 'highlight') {
         next.textBackgroundStyle = {
-          color: this.highlighted(style.textBackgroundStyle?.color) ? '#00000000' : '#6654D81B', radius: 3
+          color: this.highlighted(style.textBackgroundStyle?.color) ? '#00000000' : this.highlightColor(), radius: 3
         };
       } else {
         const decoration = kind === 'underline' ? TextDecorationType.Underline : TextDecorationType.LineThrough;
@@ -437,7 +497,7 @@ struct Index {
     } else if (kind === 'highlight') {
       this.richController.updateSpanStyle({ start: selection[0], end: selection[1],
         textStyle: { textBackgroundStyle: {
-          color: this.highlighted(style.textBackgroundStyle?.color) ? '#00000000' : '#6654D81B', radius: 3
+          color: this.highlighted(style.textBackgroundStyle?.color) ? '#00000000' : this.highlightColor(), radius: 3
         } } });
     } else {
       const type = kind === 'underline' ? TextDecorationType.Underline : TextDecorationType.LineThrough;
@@ -879,12 +939,12 @@ struct Index {
         .onClick((): void => { this.settings = true; this.drawer = false; })
     }
     .padding(14).width(this.sidebarWidth).height('100%')
-    .backgroundColor(this.dark ? '#20291E' : '#EFF8EA')
+    .backgroundColor(this.dark ? this.accentSurface() : this.accentSurface())
   }
 
   @Builder private sidebarItem(label: string, id: string): void {
     Row({ space: 10 }) {
-      if (this.groupId === id) Column().width(3).height(28).borderRadius(2).backgroundColor('#54D81B')
+      if (this.groupId === id) Column().width(3).height(28).borderRadius(2).backgroundColor(this.accent)
       else Blank().width(3)
       if (id === 'all') Image((this.dark ? $r('app.media.nav_inbox_dark') : $r('app.media.nav_inbox'))).width(18).height(18)
       else if (id === 'ungrouped') Image((this.dark ? $r('app.media.nav_archive_dark') : $r('app.media.nav_archive'))).width(18).height(18)
@@ -894,7 +954,7 @@ struct Index {
         : this.notes.filter((note: NativeNote): boolean => note.groupId === id).length).toString())
         .fontSize(12).fontColor(this.dark ? '#A4AFA1' : '#677166')
     }.width('100%').height(48).padding({ left: 9, right: 11 })
-      .backgroundColor(this.groupId === id ? (this.dark ? '#34562C' : '#E1F6D8') : '#00000000')
+      .backgroundColor(this.groupId === id ? (this.dark ? this.accentSurface() : this.accentSurface()) : '#00000000')
       .borderRadius(14)
       .onClick((): void => { this.groupId = id; this.drawer = false; this.activeId = ''; })
   }
@@ -945,12 +1005,12 @@ struct Index {
         Row({ space: 8 }) {
           Button() {
             Row({ space: 8 }) {
-              Image($r('app.media.nav_note')).width(18).height(18)
+              this.noteIcon()
 
               Text('笔记').fontSize(14).fontColor('#141914')
             }
           }.type(ButtonType.Normal).layoutWeight(1).height(40).borderRadius(12)
-            .backgroundColor('#54D81B').onClick((): void => this.createNote('richtext'))
+            .backgroundColor(this.accent).onClick((): void => this.createNote('richtext'))
           Button() {
             Row({ space: 8 }) {
               Image((this.dark ? $r('app.media.mind_tree_dark') : $r('app.media.mind_tree'))).width(18).height(18)
@@ -958,7 +1018,10 @@ struct Index {
               Text('灵感笔记').fontSize(14).fontColor(this.dark ? '#D8DED4' : '#141914')
             }
           }.type(ButtonType.Normal).layoutWeight(1).height(40).borderRadius(12)
-            .backgroundColor(this.dark ? '#303830' : '#E7F4E1').onClick((): void => this.createNote('mindmap'))
+            .backgroundColor(this.dark ? '#303830' : this.accentSurface()).onClick((): void => this.createNote('mindmap'))
+          Button('☑ 待办').type(ButtonType.Normal).layoutWeight(1).height(40).borderRadius(12)
+            .fontColor(this.dark ? '#D8DED4' : '#141914')
+            .backgroundColor(this.dark ? '#303830' : this.accentSurface()).onClick((): void => this.createNote('todo'))
         }.width('100%').padding({ left: 18, right: 18, bottom: 16 })
       }
       TextInput({ placeholder: '搜索笔记', text: this.search })
@@ -981,12 +1044,16 @@ struct Index {
           FlowItem() {
             Row({ space: 10 }) {
               Column() {
-                Image(note.kind === 'mindmap' ? (this.dark ? $r('app.media.mind_tree_dark') : $r('app.media.mind_tree'))
-                  : (this.dark ? $r('app.media.nav_note_dark') : $r('app.media.nav_note')))
-                  .width(23).height(23)
+                if (note.kind === 'todo') {
+                  Text('☑').fontSize(23).fontColor(this.accent)
+                } else {
+                  Image(note.kind === 'mindmap' ? (this.dark ? $r('app.media.mind_tree_dark') : $r('app.media.mind_tree'))
+                    : (this.dark ? $r('app.media.nav_note_dark') : $r('app.media.nav_note')))
+                    .width(23).height(23)
+                }
               }.width(38).height(38).borderRadius(11)
                 .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
-                .backgroundColor(this.dark ? '#34562C' : '#E7F5E0')
+                .backgroundColor(this.dark ? this.accentSurface() : this.accentSurface())
               Column({ space: 6 }) {
                 Text(note.title).fontSize(17).fontWeight(FontWeight.Medium)
                   .fontColor(this.dark ? '#D8DED4' : '#141914')
@@ -999,15 +1066,15 @@ struct Index {
               }.layoutWeight(1).alignItems(HorizontalAlign.Start)
               if (this.selectionMode) {
                 Text(this.selectedIds.includes(note.id) ? '✓' : '○').fontSize(21)
-                  .fontColor(this.selectedIds.includes(note.id) ? '#54D81B' : (this.dark ? '#A4AFA1' : '#677166'))
+                  .fontColor(this.selectedIds.includes(note.id) ? this.accent : (this.dark ? '#A4AFA1' : '#677166'))
               } else if (this.tablet) {
                 Text('›').fontSize(22).fontColor(this.dark ? '#A4AFA1' : '#677166')
               }
             }.padding(16).width('100%').alignItems(VerticalAlign.Top)
             .backgroundColor(this.selectedIds.includes(note.id) || this.activeId === note.id
-              ? (this.dark ? '#34562C' : '#EAF8E4') : (this.dark ? '#252B24' : '#FFFFFF'))
+              ? (this.dark ? this.accentSurface() : this.accentSurface()) : (this.dark ? '#252B24' : '#FFFFFF'))
             .borderRadius(20)
-            .border({ width: 1, color: this.activeId === note.id ? '#A7DB9A' : '#00000000' })
+            .border({ width: 1, color: this.activeId === note.id ? this.mixAccent('#FFFFFF', .46) : '#00000000' })
             .onClick((): void => {
               if (this.suppressSelectionClick === note.id) { this.suppressSelectionClick = ''; return; }
               if (this.selectionMode) this.toggleSelection(note.id);
@@ -1029,7 +1096,7 @@ struct Index {
             .fontColor(this.dark ? '#D8DED4' : '#141914')
           Text('先记下一个想法，之后再慢慢整理。').fontSize(13)
             .fontColor(this.dark ? '#A4AFA1' : '#677166').textAlign(TextAlign.Center)
-          Button('新建笔记').fontColor('#141914').backgroundColor('#54D81B')
+          Button('新建笔记').fontColor('#141914').backgroundColor(this.accent)
             .borderRadius(14).onClick((): void => this.createNote('richtext'))
         }.width('100%').height('100%').justifyContent(FlexAlign.Center)
           .alignItems(HorizontalAlign.Center)
@@ -1056,12 +1123,18 @@ struct Index {
           .margin({ left: 22, right: 22, bottom: 16 })
       } else if (!this.tablet) {
       Row({ space: 10 }) {
-        Button('＋ 笔记').width(this.tablet ? 90 : 120).fontColor('#141914').backgroundColor('#E6F8DF')
+        Button() {
+          Row({ space: 8 }) { this.noteIcon(); Text('笔记').fontSize(15).fontColor('#141914') }
+        }.type(ButtonType.Normal).width(this.tablet ? 90 : 120).backgroundColor(this.accentSurface())
           .onClick((): void => this.createNote('richtext'))
         Divider().vertical(true).height(22).color(this.dark ? '#4B5449' : '#DDE5DA')
         Button('◇ 灵感笔记').width(this.tablet ? 120 : 150).fontColor(this.dark ? '#D8DED4' : '#141914')
           .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
           .onClick((): void => this.createNote('mindmap'))
+        Divider().vertical(true).height(22).color(this.dark ? '#4B5449' : '#DDE5DA')
+        Button('☑').width(44).fontColor(this.dark ? '#D8DED4' : '#141914')
+          .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+          .onClick((): void => this.createNote('todo'))
       }.padding(6).backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
         .borderRadius(36).alignSelf(ItemAlign.Center).margin({ bottom: 16 })
       }
@@ -1088,11 +1161,11 @@ struct Index {
             .fontColor(this.dark ? '#D8DED4' : '#141914').backgroundColor('#00000000')
             .onClick((): void => this.leaveEditor())
         }
-        Text(`拾页  ›  ${this.currentGroupLabel()}  ›  ${this.activeNote()?.kind === 'mindmap' ? '灵感笔记' : '笔记'}`).fontSize(13)
+        Text(`拾页  ›  ${this.currentGroupLabel()}  ›  ${this.activeNote()?.kind === 'mindmap' ? '灵感笔记' : this.activeNote()?.kind === 'todo' ? '待办' : '笔记'}`).fontSize(13)
           .fontColor(this.dark ? '#A4AFA1' : '#677166').layoutWeight(1)
         if (this.editingMode) {
           Button('✓').type(ButtonType.Normal).width(42).height(42).fontSize(22)
-            .fontColor('#141914').backgroundColor('#54D81B').borderRadius(13)
+            .fontColor('#141914').backgroundColor(this.accent).borderRadius(13)
             .id('editorDone').focusable(true).onClick((): void => this.finishEditing())
         }
         if (this.activeNote()?.kind === 'mindmap') {
@@ -1100,8 +1173,13 @@ struct Index {
             Image(this.treeMode ? (this.dark ? $r('app.media.mind_list_dark') : $r('app.media.mind_list')) : (this.dark ? $r('app.media.mind_tree_dark') : $r('app.media.mind_tree'))).width(22).height(22)
 
           }.type(ButtonType.Normal).width(42).height(42).borderRadius(13)
-            .backgroundColor(this.dark ? '#252B24' : '#F0F5ED')
-            .onClick((): void => { this.commitTreeEdit(); animateTo({ duration: 220, curve: Curve.EaseOut }, (): void => { this.treeMode = !this.treeMode; }); })
+            .backgroundColor(this.dark ? '#252B24' : this.accentSurface())
+            .onClick((): void => {
+              this.commitTreeEdit();
+              const note = this.activeNote();
+              animateTo({ duration: 220, curve: Curve.EaseOut }, (): void => { this.treeMode = !this.treeMode; });
+              if (note !== null) { note.viewMode = this.treeMode ? 'tree' : 'list'; this.storeSave(); }
+            })
         }
         Button() {
           Image((this.dark ? $r('app.media.nav_more_dark') : $r('app.media.nav_more'))).width(22).height(22)
@@ -1113,7 +1191,7 @@ struct Index {
         .padding({ left: 18, right: 18, top: 14, bottom: 14 })
       Divider().color(this.dark ? '#394537' : '#E1E8DE')
         .width(this.wideTablet ? 760 : '94%').alignSelf(ItemAlign.Center)
-      if (this.activeNote()?.kind !== 'mindmap' || !this.treeMode) Column({ space: 12 }) {
+      Column({ space: 12 }) {
         Text(`${new Date(this.activeNote()?.updatedAt || Date.now()).toLocaleTimeString()}  |  ${this.activeNote()?.kind === 'mindmap' ? this.mindCharCount(this.mindRoot()) : readRich(this.body).text.length} 字`)
           .fontSize(13).fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%')
         if (this.editingMode) {
@@ -1135,33 +1213,31 @@ struct Index {
         }
       }.width(this.wideTablet ? 760 : '100%').alignSelf(ItemAlign.Center)
         .padding({ left: 24, right: 24, top: 20, bottom: 18 })
-      if (this.activeNote()?.kind !== 'mindmap' || !this.treeMode) {
-        Divider().color(this.dark ? '#394537' : '#E1E8DE')
-          .width(this.wideTablet ? 760 : '94%').alignSelf(ItemAlign.Center)
-      }
+      Divider().color(this.dark ? '#394537' : '#E1E8DE')
+        .width(this.wideTablet ? 760 : '94%').alignSelf(ItemAlign.Center)
       if (this.activeNote()?.kind === 'mindmap') {
         if (this.treeMode) {
           Scroll(this.mindTreeScroller) {
             Stack({ alignContent: Alignment.TopStart }) {
               Path({ width: this.treeWidth, height: this.treeHeight, commands: this.treeLines })
-                .fill('#00000000').stroke(this.dark ? '#718E69' : '#9FC796').strokeWidth(2)
+                .fill('#00000000').stroke(this.dark ? '#718E69' : this.mixAccent(this.dark ? '#171B16' : '#FFFFFF', .42)).strokeWidth(2)
               ForEach(this.treeNodes, (node: TreePoint) => {
                 if (this.editingTreeId === node.id) {
                   TextInput({ text: this.editingTreeText, placeholder: node.depth === 0 ? '请输入中心主题' : '输入分支' })
                     .id(`tree-${node.id}`).fontSize(node.depth === 0 ? 18 : 16).width(210).height(72)
                     .fontColor(node.depth === 0 ? '#141914' : (this.dark ? '#D8DED4' : '#141914'))
-                    .backgroundColor(node.depth === 0 ? '#54D81B' : (this.dark ? '#303830' : '#EEF8E9'))
+                    .backgroundColor(node.depth === 0 ? this.accent : (this.dark ? '#303830' : this.accentSurface()))
                     .borderRadius(16)
                     .position({ x: node.x, y: node.y })
                     .onAppear((): void => { setTimeout((): void => { focusControl.requestFocus(`tree-${node.id}`); }, 80); })
                     .onChange((value: string): void => { this.editingTreeText = value; })
-                    .onSubmit((): void => this.commitTreeEdit())
-                    .onBlur((): void => this.commitTreeEdit())
+                    .onSubmit((): void => { this.commitTreeEdit(); this.selectedBranchId = node.id; this.addSibling(); })
+                    .onBlur((): void => { if (this.editingTreeId === node.id) this.commitTreeEdit(); })
                 } else {
                   Text(node.text).fontSize(node.depth === 0 ? 18 : 16).fontWeight(node.depth === 0 ? FontWeight.Bold : FontWeight.Normal)
                     .fontColor(node.depth === 0 ? '#141914' : (this.dark ? '#D8DED4' : '#141914')).maxLines(3)
                     .textOverflow({ overflow: TextOverflow.Ellipsis }).width(210).height(72).padding({ left: 12, right: 20 })
-                    .backgroundColor(node.depth === 0 ? '#54D81B' : (this.dark ? '#303830' : '#EEF8E9'))
+                    .backgroundColor(node.depth === 0 ? this.accent : (this.dark ? '#303830' : this.accentSurface()))
                     .borderRadius(16).position({ x: node.x, y: node.y })
                     .onClick((): void => {
                       this.selectedBranchId = node.id;
@@ -1172,21 +1248,9 @@ struct Index {
                 }
                 if (node.hiddenCount > 0) {
                   Button(`${node.hiddenCount}`).type(ButtonType.Circle).width(30).height(30).fontSize(13)
-                    .fontColor('#45A926').backgroundColor(this.dark ? '#303830' : '#FFFFFF')
+                    .fontColor(this.mixAccent('#000000', .78)).backgroundColor(this.dark ? '#303830' : '#FFFFFF')
                     .position({ x: node.x + 192, y: node.y - 8 })
                     .onClick((): void => this.toggleBranch(node.id))
-                }
-                if (this.selectedBranchId === node.id) {
-                  Button('+').type(ButtonType.Circle).width(38).height(38).fontSize(25)
-                    .fontColor('#141914').backgroundColor('#54D81B')
-                    .position({ x: node.x + 216, y: node.y + 18 })
-                    .onClick((): void => { this.commitTreeEdit(); this.addBranch(node.id); })
-                  if (node.depth > 0) {
-                    Button('↳').type(ButtonType.Circle).width(34).height(34).fontSize(20)
-                      .fontColor(this.dark ? '#D8DED4' : '#141914').backgroundColor(this.dark ? '#303830' : '#FFFFFF')
-                      .position({ x: node.x + 218, y: node.y + 60 })
-                      .onClick((): void => { this.commitTreeEdit(); this.selectedBranchId = node.id; this.addSibling(); })
-                  }
                 }
               }, (node: TreePoint): string => node.id)
             }.width(this.treeWidth).height(this.treeHeight)
@@ -1203,7 +1267,7 @@ struct Index {
                   Text('以笔记名称为中心主题，逐步展开你的灵感。').fontSize(14)
                     .fontColor(this.dark ? '#A4AFA1' : '#677166').textAlign(TextAlign.Center)
                   Button('＋  添加第一个分支').type(ButtonType.Normal)
-                    .fontColor('#141914').backgroundColor('#54D81B').borderRadius(14)
+                    .fontColor('#141914').backgroundColor(this.accent).borderRadius(14)
                     .margin({ top: 6 }).onClick((): void => this.addBranch(this.mindRoot().id))
                 }.width('100%').height(400).justifyContent(FlexAlign.Center)
                   .alignItems(HorizontalAlign.Center)
@@ -1228,28 +1292,26 @@ struct Index {
                     })
                 }
               }.width('100%').height(54).padding({ left: 18 + (row.depth - 1) * 24, right: 12 })
-                .backgroundColor(this.selectedBranchId === row.id && this.editingMode ? (this.dark ? '#263526' : '#F4F9F1') : '#00000000')
+                .backgroundColor(this.selectedBranchId === row.id && this.editingMode ? (this.dark ? this.accentSurface() : this.accentSurface()) : '#00000000')
               }, (row: BranchRow): string => `${row.id}-${this.mindStructureRevision}`)
             }.width(this.wideTablet ? 760 : '100%').constraintSize({ minHeight: '100%' }).padding(24)
               .alignSelf(ItemAlign.Center)
               .justifyContent(FlexAlign.Start).alignItems(HorizontalAlign.Start)
           }.layoutWeight(1)
         }
-        if (this.editingMode && !this.treeMode) {
+        if (this.editingMode) {
           Row() {
-            this.mindTool('子级', '+', 'child')
-            this.mindTool('同级', '↳', 'sibling')
             this.mindTool('升级', '↖', 'shallower')
             this.mindTool('降级', '↘', 'deeper')
-          }.width(this.tablet ? 340 : '88%').height(64)
+          }.width(this.tablet ? 240 : '62%').height(64)
             .padding({ left: 8, right: 8, top: 5, bottom: 5 })
-            .backgroundColor(this.dark ? '#303830' : '#EFF4EB')
+            .backgroundColor(this.dark ? '#303830' : this.accentSurface())
             .borderRadius(22).alignSelf(ItemAlign.Center).margin({ bottom: 14 })
         }
       } else {
         RichEditor(this.richOptions)
           .placeholder('开始记录…')
-          .caretColor('#54D81B')
+          .caretColor(this.accent)
           .backgroundColor(this.dark ? '#171B16' : '#FFFFFF')
           .padding({ left: 30, right: 30, top: 22, bottom: 22 }).layoutWeight(1)
           .width(this.wideTablet ? 760 : '100%').alignSelf(ItemAlign.Center)
@@ -1267,21 +1329,27 @@ struct Index {
             this.formatTool('S', 'strike')
             this.formatTool('M', 'highlight')
             this.formatTool('❝', 'quote')
+            this.formatTool('☐', 'todo')
           }
         }.scrollable(ScrollDirection.Horizontal).width(this.tablet ? 430 : '100%')
           .alignSelf(ItemAlign.Center).padding(6).borderRadius(20)
-          .backgroundColor(this.dark ? '#252B24' : '#F0F4ED')
+          .backgroundColor(this.dark ? '#252B24' : this.accentSurface())
           .margin({ bottom: 14 })
         }
       }
     }.width(0).layoutWeight(1).height('100%').backgroundColor(this.dark ? '#171B16' : '#FFFFFF')
   }
 
+  @Builder private noteIcon(): void {
+    Path({ width: 22, height: 22, commands: 'M5 3.5 L15 3.5 L20 8.5 L20 20 L19 21 L5 21 L4 20 L4 4.5 Z M15 3.5 L15 8.5 L20 8.5 M8 12 L16 12 M8 16 L15 16' })
+      .fill('#00000000').stroke('#141914').strokeWidth(1.8).width(22).height(22)
+  }
+
   @Builder private formatTool(label: string, kind: string): void {
     Button(label).type(ButtonType.Normal).width(46).height(44).borderRadius(13)
       .fontSize(17).fontWeight(kind === 'bold' ? FontWeight.Bold : FontWeight.Normal)
       .fontColor(this.dark ? '#D8DED4' : '#141914')
-      .backgroundColor(this.richActive.includes(kind) ? (this.dark ? '#34562C' : '#DDF4D5') : '#00000000')
+      .backgroundColor(this.richActive.includes(kind) ? (this.dark ? this.accentSurface() : this.accentSurface()) : '#00000000')
       .onClick((): void => this.formatRich(kind))
   }
 
@@ -1369,7 +1437,7 @@ struct Index {
       Row({ space: 12 }) {
         Image(list ? (this.dark ? $r('app.media.nav_archive_dark') : $r('app.media.nav_archive')) : (this.dark ? $r('app.media.nav_folder_dark') : $r('app.media.nav_folder'))).width(20).height(20)
         Text(label).fontSize(17).fontColor(this.dark ? '#D8DED4' : '#141914').layoutWeight(1)
-        if (this.listLayout === list) Text('✓').fontSize(20).fontColor('#54D81B')
+        if (this.listLayout === list) Text('✓').fontSize(20).fontColor(this.accent)
       }.width('100%')
     }.type(ButtonType.Normal).width('100%').backgroundColor(this.dark ? '#303830' : '#F4F6F2')
       .borderRadius(16).onClick((): void => {
@@ -1384,7 +1452,7 @@ struct Index {
       Row({ space: 12 }) {
         Image((this.dark ? $r('app.media.nav_settings_dark') : $r('app.media.nav_settings'))).width(20).height(20)
         Text(label).fontSize(17).fontColor(this.dark ? '#D8DED4' : '#141914').layoutWeight(1)
-        if (this.dark === value) Text('✓').fontSize(20).fontColor('#54D81B')
+        if (this.dark === value) Text('✓').fontSize(20).fontColor(this.accent)
       }.width('100%')
     }.type(ButtonType.Normal).width('100%').backgroundColor(this.dark ? '#303830' : '#F4F6F2')
       .borderRadius(16).onClick((): void => {
@@ -1405,6 +1473,16 @@ struct Index {
     }.width('100%').padding(18)
       .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
       .onClick((): void => { if (link !== '') this.openLink(link); })
+  }
+
+  @Builder private licenseItem(name: string, license: string, url: string): void {
+    Column({ space: 5 }) {
+      Text(name).fontSize(16).fontColor(this.dark ? '#D8DED4' : '#141914').width('100%')
+      Text(license).fontSize(13).fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%')
+      Text(url).fontSize(12).fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%')
+    }.width('100%').padding(16).borderRadius(18)
+      .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+      .onClick((): void => this.openLink(url))
   }
 
   @Builder private settingsPane(): void {
@@ -1430,6 +1508,9 @@ struct Index {
             this.aboutItem('获取更新', '', (this.dark ? $r('app.media.nav_archive_dark') : $r('app.media.nav_archive')), 'https://github.com/OpenALC/insp-native/releases')
             this.aboutItem('GitHub 仓库', 'OpenALC/insp-native', (this.dark ? $r('app.media.nav_folder_dark') : $r('app.media.nav_folder')), 'https://github.com/OpenALC/insp-native')
             this.aboutItem('开源协议', 'MIT', (this.dark ? $r('app.media.nav_lock_dark') : $r('app.media.nav_lock')), 'https://github.com/OpenALC/insp-native/blob/main/LICENSE')
+            Text('开源组件声明').fontSize(14).fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%').padding({ top: 16 })
+            this.licenseItem('OpenHarmony ArkUI', 'Apache-2.0', 'https://gitee.com/openharmony/arkui_ace_engine')
+            this.licenseItem('OpenHarmony ArkTS', 'Apache-2.0', 'https://gitee.com/openharmony/arkcompiler_ets_frontend')
           } else {
             Text('外观').fontSize(14).fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%')
             Row() {
@@ -1440,6 +1521,14 @@ struct Index {
             }.justifyContent(FlexAlign.SpaceBetween).padding(18).width('100%')
               .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
               .onClick((): void => { this.themeChoiceOpen = true; })
+            Row({ space: 12 }) {
+              Image((this.dark ? $r('app.media.nav_settings_dark') : $r('app.media.nav_settings'))).width(20).height(20)
+              Text('主题色').fontSize(17).fontColor(this.dark ? '#D8DED4' : '#141914').layoutWeight(1)
+              Text(this.accent).fontSize(15).fontColor(this.dark ? '#A4AFA1' : '#677166')
+              Text('›').fontSize(19).fontColor(this.dark ? '#A4AFA1' : '#677166')
+            }.justifyContent(FlexAlign.SpaceBetween).padding(18).width('100%')
+              .backgroundColor(this.dark ? '#252B24' : '#FFFFFF').borderRadius(18)
+              .onClick((): void => { this.accentDraft = this.accent; this.accentChoiceOpen = true; })
             Row() {
               Image((this.dark ? $r('app.media.nav_folder_dark') : $r('app.media.nav_folder'))).width(20).height(20)
               Text('笔记布局').fontSize(17).fontColor(this.dark ? '#D8DED4' : '#141914').layoutWeight(1)
@@ -1499,12 +1588,12 @@ struct Index {
 
               }.width(92).height(92).borderRadius(24)
                 .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
-                .backgroundColor(this.dark ? '#303830' : '#E8F6E1')
+                .backgroundColor(this.dark ? '#303830' : this.accentSurface())
               Text('给想法，留一页空白。').fontSize(25).fontWeight(FontWeight.Bold)
                 .fontColor(this.dark ? '#D8DED4' : '#141914')
               Text('选择一篇笔记，或写下此刻想到的事。').fontSize(15)
                 .fontColor(this.dark ? '#A4AFA1' : '#677166')
-              Button('＋  新建笔记').fontColor('#141914').backgroundColor('#54D81B')
+              Button('＋  新建笔记').fontColor('#141914').backgroundColor(this.accent)
                 .borderRadius(14).margin({ top: 8 })
                 .onClick((): void => this.createNote('richtext'))
             }.layoutWeight(1).height('100%').justifyContent(FlexAlign.Center)
@@ -1574,7 +1663,7 @@ struct Index {
               Button('取消').layoutWeight(1).fontColor(this.dark ? '#D8DED4' : '#141914')
                 .backgroundColor(this.dark ? '#303830' : '#F4F6F2')
                 .onClick((): void => { this.addingGroup = false; this.groupName = ''; })
-              Button('创建').layoutWeight(1).fontColor('#141914').backgroundColor('#54D81B')
+              Button('创建').layoutWeight(1).fontColor('#141914').backgroundColor(this.accent)
                 .onClick((): void => this.addGroup())
             }.width('100%')
           }.width(this.tablet ? 420 : '88%').padding(24).borderRadius(24)
@@ -1609,6 +1698,33 @@ struct Index {
             Button('取消').width('100%').fontColor(this.dark ? '#A4AFA1' : '#677166')
               .backgroundColor(this.dark ? '#303830' : '#F4F6F2').borderRadius(16)
               .onClick((): void => { this.themeChoiceOpen = false; })
+          }.width(this.tablet ? 480 : '92%').padding(20).borderRadius(28)
+            .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
+            .alignSelf(ItemAlign.Center).margin({ bottom: 16 })
+        }.width('100%').height('100%').backgroundColor('#66000000')
+      }
+      if (this.accentChoiceOpen) {
+        Column() {
+          Blank().layoutWeight(1).onClick((): void => { this.accentChoiceOpen = false; })
+          Column({ space: 14 }) {
+            Text('主题色').fontSize(23).fontWeight(FontWeight.Bold)
+              .fontColor(this.dark ? '#D8DED4' : '#141914').width('100%')
+            Row({ space: 10 }) {
+              ForEach(['#54D81B', '#318CE7', '#B36AE2', '#F08043', '#D45A75'], (color: string) => {
+                Button().type(ButtonType.Circle).width(44).height(44).backgroundColor(color)
+                  .onClick((): void => { this.accentDraft = color; })
+              }, (color: string): string => color)
+            }.width('100%')
+            TextInput({ text: this.accentDraft, placeholder: '#RRGGBB' })
+              .fontColor(this.dark ? '#D8DED4' : '#141914')
+              .backgroundColor(this.dark ? '#303830' : '#F4F6F2')
+              .borderRadius(12).onChange((value: string): void => { this.accentDraft = value; })
+            Row({ space: 10 }) {
+              Button('取消').layoutWeight(1).backgroundColor(this.dark ? '#303830' : '#F4F6F2')
+                .fontColor(this.dark ? '#D8DED4' : '#141914').onClick((): void => { this.accentChoiceOpen = false; })
+              Button('应用').layoutWeight(1).backgroundColor(this.accent)
+                .fontColor('#141914').onClick((): void => this.saveAccent(this.accentDraft))
+            }
           }.width(this.tablet ? 480 : '92%').padding(20).borderRadius(28)
             .backgroundColor(this.dark ? '#252B24' : '#FFFFFF')
             .alignSelf(ItemAlign.Center).margin({ bottom: 16 })

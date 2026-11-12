@@ -97,6 +97,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var composeBar: LinearLayout
     private lateinit var composeNoteButton: TextView
     private lateinit var composeMindButton: TextView
+    private lateinit var composeTodoButton: View
     private var composeCompact = false
     private var composeAnimator: ValueAnimator? = null
     private lateinit var selectionBar: LinearLayout
@@ -138,7 +139,9 @@ class MainActivity : AppCompatActivity() {
     private var listLayout = false
     private var allNotes = listOf<NativeNote>()
     private var allGroups = listOf<NoteGroup>()
-    private val green = 0xff54d81b.toInt()
+    private val green by lazy { Accent.color(this) }
+    private val greenSoft by lazy { Accent.mix(green, paper, if (dark) .18f else .13f) }
+    private val greenMid by lazy { Accent.mix(green, paper, if (dark) .35f else .28f) }
     private val tablet by lazy { resources.configuration.smallestScreenWidthDp >= 600 }
     private val wideTablet by lazy { tablet && resources.configuration.screenWidthDp >= 900 }
     private val dark by lazy { resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES }
@@ -297,12 +300,20 @@ class MainActivity : AppCompatActivity() {
             background = rounded(paper, 36)
             elevation = dp(8).toFloat()
         }
-        val expanded = dp(if (tablet) 105 else 145)
-        composeNoteButton = pill("＋  笔记") { create("richtext") }
+        val expanded = dp(if (tablet) 105 else 125)
+        composeNoteButton = pill("笔记") { create("richtext") }.apply {
+            val icon = androidx.core.content.ContextCompat.getDrawable(this@MainActivity, R.drawable.ic_note)!!
+                .mutate().apply { setTint(ink); setBounds(0, 0, dp(21), dp(21)) }
+            setCompoundDrawablesRelative(icon, null, null, null)
+            compoundDrawablePadding = dp(7)
+        }
         composeMindButton = pill("⌘  灵感笔记") { create("mindmap") }
         composeBar.addView(composeNoteButton, LinearLayout.LayoutParams(expanded, dp(48)))
         composeBar.addView(View(this).apply { setBackgroundColor(secondary) }, LinearLayout.LayoutParams(dp(1), dp(22)).apply { leftMargin = dp(5); rightMargin = dp(5) })
         composeBar.addView(composeMindButton, LinearLayout.LayoutParams(expanded, dp(48)))
+        composeBar.addView(View(this).apply { setBackgroundColor(secondary) }, LinearLayout.LayoutParams(dp(1), dp(22)).apply { leftMargin = dp(5); rightMargin = dp(5) })
+        composeTodoButton = iconButton("checklist") { create("todo") }.apply { contentDescription = "新建待办清单" }
+        composeBar.addView(composeTodoButton, LinearLayout.LayoutParams(dp(48), dp(48)))
         cardSurface.addView(composeBar, FrameLayout.LayoutParams(-2, dp(60), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(18) })
         selectionBar = LinearLayout(this).apply {
             gravity = Gravity.CENTER; setPadding(dp(8), dp(8), dp(8), dp(8)); visibility = View.GONE
@@ -349,7 +360,7 @@ class MainActivity : AppCompatActivity() {
         composeAnimator?.cancel()
         val start = composeNoteButton.layoutParams.width
         val end = dp(if (compact) 48 else if (tablet) 105 else 145)
-        if (compact) { composeNoteButton.text = "＋"; composeMindButton.text = "⌘" }
+        if (compact) { composeNoteButton.text = ""; composeMindButton.text = "⌘" }
         composeAnimator = ValueAnimator.ofInt(start, end).apply {
             duration = if (compact) 170 else 280
             if (!compact) interpolator = OvershootInterpolator(1.15f)
@@ -361,7 +372,7 @@ class MainActivity : AppCompatActivity() {
             if (!compact) addListener(object : android.animation.AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: android.animation.Animator) {
                     if (!composeCompact) {
-                        composeNoteButton.text = "＋  笔记"; composeMindButton.text = "⌘  灵感笔记"
+                        composeNoteButton.text = "笔记"; composeMindButton.text = "⌘  灵感笔记"
                     }
                 }
             })
@@ -457,7 +468,7 @@ class MainActivity : AppCompatActivity() {
     private fun create(kind: String) {
         io.execute {
             val note = store.create(kind, groupId?.takeIf { it.isNotEmpty() }, privateArea)
-            runOnUiThread { allNotes = listOf(note) + allNotes; searchInput.setText(""); renderCards(); cards.scrollToPosition(0); openNote(note, null, kind == "richtext") }
+            runOnUiThread { allNotes = listOf(note) + allNotes; searchInput.setText(""); renderCards(); cards.scrollToPosition(0); openNote(note, null, kind != "mindmap") }
         }
     }
 
@@ -465,8 +476,8 @@ class MainActivity : AppCompatActivity() {
         val generation = privateGeneration
         active = note.copy()
         selectedCard = card
-        if (note.kind == "richtext") {
-            val document = RichTextCodec.decode(note.body, dark) { id -> thumbnails.get(id) ?: imagePlaceholder() }
+        if (note.kind != "mindmap") {
+            val document = RichTextCodec.decode(note.body, dark, green) { id -> thumbnails.get(id) ?: imagePlaceholder() }
             showEditor(active!!, document, card, startEditing)
             val imageIds = JSONObject(note.body).optJSONArray("spans")?.let { spans ->
                 (0 until spans.length()).mapNotNull { index ->
@@ -508,28 +519,31 @@ class MainActivity : AppCompatActivity() {
             setOnTouchListener { view, event ->
                 if (!editingMode && event.actionMasked == MotionEvent.ACTION_UP) {
                     val field = view as EditText
-                    enterEditing(field, field.getOffsetForPosition(event.x, event.y))
+                    if (note.kind == "mindmap") {
+                        enterMindEditing()
+                        field.isFocusableInTouchMode = true
+                        field.isCursorVisible = true
+                        field.requestFocus()
+                        field.setSelection(field.getOffsetForPosition(event.x, event.y).coerceIn(0, field.length()))
+                        (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                            .showSoftInput(field, InputMethodManager.SHOW_IMPLICIT)
+                    } else enterEditing(field, field.getOffsetForPosition(event.x, event.y))
                     true
                 } else false
             }
             addTextChangedListener(watcher {
-                note.title = it.ifBlank { if (note.kind == "mindmap") "未命名的灵感笔记" else "未命名笔记" }
+                note.title = it.ifBlank { when (note.kind) { "mindmap" -> "未命名的灵感笔记"; "todo" -> "待办清单"; else -> "未命名笔记" } }
                 mindPanel?.renameRoot(note.title)
                 scheduleSave()
             })
         }
-        if (note.kind == "richtext") {
-            titleInput = title
-            top.addView(title, LinearLayout.LayoutParams(0, dp(50), 1f))
-        } else {
-            titleInput = null
-            top.addView(View(this), LinearLayout.LayoutParams(0, dp(50), 1f))
-        }
+        titleInput = title
+        top.addView(title, LinearLayout.LayoutParams(0, dp(50), 1f))
         doneButton = iconButton("check") { exitEditing() }.apply { visibility = View.GONE }
         top.addView(doneButton, LinearLayout.LayoutParams(dp(48), dp(48)))
         if (note.kind == "mindmap") {
             val toggle = ImageView(this).apply {
-                setImageResource(R.drawable.ic_mind_list)
+                setImageResource(if (getSharedPreferences("mind-view", Context.MODE_PRIVATE).getBoolean(note.id, false)) R.drawable.ic_mind_list else R.drawable.ic_mind_tree)
                 setColorFilter(ink)
                 setPadding(dp(12), dp(12), dp(12), dp(12))
                 setOnClickListener {
@@ -541,12 +555,12 @@ class MainActivity : AppCompatActivity() {
         }
         top.addView(action("⋯") { noteOptions(note) }, LinearLayout.LayoutParams(dp(48), dp(48)))
         editor.addView(top)
-        if (note.kind == "richtext") {
+        if (note.kind != "mindmap") {
             val input = RichNoteInput(this).apply {
                 gravity = Gravity.TOP; textSize = 18f; setTextColor(ink); setHintTextColor(secondary)
                 background = null; hint = "从这里开始记录…"
                 setPadding(dp(24), dp(22), dp(24), dp(24))
-                setText(document ?: RichTextCodec.decode(note.body, dark))
+                setText(document ?: RichTextCodec.decode(note.body, dark, green))
                 clearFocus()
                 isFocusableInTouchMode = false
                 isCursorVisible = false
@@ -592,6 +606,7 @@ class MainActivity : AppCompatActivity() {
                         val start = if (offset == 0) 0 else field.text.lastIndexOf('\n', offset - 1) + 1
                         if (offset <= start + 1 && start < field.length() && field.text[start] in "☐☑") {
                             field.text.replace(start, start + 1, if (field.text[start] == '☐') "☑" else "☐")
+                            RichTextCodec.styleTasks(field.text, dark)
                             scheduleSave()
                             return@setOnTouchListener true
                         }
@@ -626,7 +641,7 @@ class MainActivity : AppCompatActivity() {
         editor.visibility = View.VISIBLE
         tabletPlaceholder?.visibility = View.GONE
         if (startEditing) {
-            if (note.kind == "richtext") inputForEditing() else editor.post { enterMindEditing() }
+            if (note.kind != "mindmap") inputForEditing() else editor.post { enterMindEditing() }
         }
         if (tablet) { editor.alpha = 0f; editor.translationX = dp(18).toFloat(); editor.animate().alpha(1f).translationX(0f).setDuration(220).start() }
     }
@@ -840,12 +855,13 @@ class MainActivity : AppCompatActivity() {
             }
             input.text.insert(start, marker)
             if (command == "quote") {
-                input.text.setSpan(QuoteSpan(green), start, end + marker.length, Spanned.SPAN_EXCLUSIVE_INCLUSIVE)
+                input.text.setSpan(QuoteSpan(if (dark) 0xffa4afa1.toInt() else 0xff777e77.toInt(), 0, 0), start, end + marker.length, Spanned.SPAN_EXCLUSIVE_INCLUSIVE)
                 RichTextCodec.styleComment(input.text, start, end + marker.length, dark)
             }
             input.setSelection((position + marker.length).coerceAtMost(input.length()))
         }
         restoringHistory = false
+        if (command == "task") RichTextCodec.styleTasks(input.text, dark)
         pendingParagraph = null
         scheduleSave(); settleHistory(); updateFormatButtons()
     }
@@ -867,7 +883,7 @@ class MainActivity : AppCompatActivity() {
                 else -> command in pendingStyles || command == pendingParagraph ||
                     (command !in suppressedStyles && hasFormatAt(input, start, end, command))
             }
-            button.background = rounded(if (active) (if (dark) 0xff34562c.toInt() else 0xffe0f7d8.toInt()) else Color.TRANSPARENT, 16)
+            button.background = rounded(if (active) greenSoft else Color.TRANSPARENT, 16)
         }
     }
 
@@ -918,7 +934,7 @@ class MainActivity : AppCompatActivity() {
         "strike" -> StrikethroughSpan()
         "highlight" -> BackgroundColorSpan(if (dark) 0xff51451c.toInt() else 0xffffeea3.toInt())
         "heading" -> RelativeSizeSpan(1.35f)
-        "quote" -> QuoteSpan(green)
+        "quote" -> QuoteSpan(if (dark) 0xffa4afa1.toInt() else 0xff777e77.toInt(), 0, 0)
         "bullet" -> BulletSpan(dp(12), green)
         "center" -> AlignmentSpan.Standard(Layout.Alignment.ALIGN_CENTER)
         "right" -> AlignmentSpan.Standard(Layout.Alignment.ALIGN_OPPOSITE)
@@ -1039,7 +1055,7 @@ class MainActivity : AppCompatActivity() {
                         scheduleSave()
                     } else {
                         io.execute {
-                            val document = RichTextCodec.decode(note.body, dark) { imageDrawable(note, it) }
+                            val document = RichTextCodec.decode(note.body, dark, green) { imageDrawable(note, it) }
                             val start = document.length
                             document.append("\n\uFFFC\n")
                             document.setSpan(ImageSpan(drawable, id), start + 1, start + 2, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
@@ -1539,6 +1555,7 @@ class MainActivity : AppCompatActivity() {
                 closeSettings(); openSettings()
             }
         }
+        row("主题色", "#%06X".format(green and 0xffffff)) { chooseAccent() }
         row("笔记布局", if (listLayout) "列表" else "宫格") {
             showSheet("笔记布局", arrayOf("宫格", "列表")) { choice ->
                 setListLayout(choice == 1)
@@ -1637,6 +1654,14 @@ class MainActivity : AppCompatActivity() {
         }
         settingsRow(content, "GitHub 仓库", "OpenALC/insp-native") { openUrl("https://github.com/OpenALC/insp-native") }
         settingsRow(content, "开源协议", "MIT") { openUrl("https://github.com/OpenALC/insp-native/blob/main/LICENSE") }
+        content.addView(TextView(this).apply { text = "开源组件声明"; textSize = 14f; setTextColor(secondary); setPadding(dp(8), dp(20), 0, dp(6)) })
+        for ((name, url, license) in listOf(
+            Triple("AndroidX AppCompat", "https://github.com/androidx/androidx", "Apache-2.0"),
+            Triple("AndroidX Activity / Core / Transition", "https://github.com/androidx/androidx", "Apache-2.0"),
+            Triple("AndroidX RecyclerView", "https://github.com/androidx/androidx", "Apache-2.0"),
+            Triple("Material Components", "https://github.com/material-components/material-components-android", "Apache-2.0"),
+            Triple("Kotlin", "https://github.com/JetBrains/kotlin", "Apache-2.0"),
+        )) openSourceRow(content, name, url, license)
         content.addView(TextView(this).apply {
             text = "拾页 Native 使用 Android、HarmonyOS 原生组件构建。完整源码、许可证及更新记录请见 GitHub 仓库。"
             textSize = 13f; setTextColor(secondary); setPadding(dp(8), dp(22), dp(8), 0)
@@ -1644,6 +1669,52 @@ class MainActivity : AppCompatActivity() {
         root.addView(page, FrameLayout.LayoutParams(-1, -1))
         page.alpha = 0f; page.translationX = dp(24).toFloat()
         page.animate().alpha(1f).translationX(0f).setDuration(220).start()
+    }
+
+    private fun chooseAccent() {
+        val input = EditText(this).apply {
+            setSingleLine(true)
+            setText("#%06X".format(green and 0xffffff))
+            selectAll()
+            setPadding(dp(20), dp(14), dp(20), dp(14))
+        }
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), 0) }
+        val swatches = LinearLayout(this).apply { gravity = Gravity.CENTER; setPadding(0, dp(4), 0, dp(12)) }
+        for (color in listOf(0xff54d81b.toInt(), 0xff318ce7.toInt(), 0xffb36ae2.toInt(), 0xfff08043.toInt(), 0xffd45a75.toInt())) {
+            swatches.addView(FrameLayout(this).apply {
+                background = rounded(color, 24)
+                contentDescription = "#%06X".format(color and 0xffffff)
+                setOnClickListener { input.setText(contentDescription); input.setSelection(input.length()) }
+            }, LinearLayout.LayoutParams(dp(38), dp(38)).apply { setMargins(dp(5), 0, dp(5), 0) })
+        }
+        content.addView(swatches)
+        content.addView(input)
+        MaterialAlertDialogBuilder(this)
+            .setTitle("主题色")
+            .setView(content)
+            .setPositiveButton("应用") { _, _ ->
+                val value = input.text.toString().trim()
+                if (Regex("^#[0-9a-fA-F]{6}$").matches(value)) {
+                    Accent.save(this, Color.parseColor(value))
+                    recreate()
+                } else toast("请输入 #RRGGBB 格式的颜色")
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun openSourceRow(content: LinearLayout, name: String, url: String, license: String) {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(12), dp(18), dp(12))
+            background = rounded(paper, 17)
+            tapFeedback()
+            setOnClickListener { openUrl(url) }
+        }
+        row.addView(TextView(this).apply { text = name; textSize = 16f; setTextColor(ink) })
+        row.addView(TextView(this).apply { text = license; textSize = 13f; setTextColor(secondary) })
+        row.addView(TextView(this).apply { text = url; textSize = 12f; setTextColor(secondary); maxLines = 2 })
+        content.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(7) })
     }
 
     private fun openUrl(url: String) {
@@ -1767,15 +1838,15 @@ class MainActivity : AppCompatActivity() {
                 setStroke(dp(1), if (note.id in selectedIds) green else secondary)
             }
             holder.title.text = note.title
-            holder.preview.text = if (note.kind == "richtext") {
-                RichTextCodec.decode(note.body, dark).apply {
+            holder.preview.text = if (note.kind != "mindmap") {
+                RichTextCodec.decode(note.body, dark, green).apply {
                     for (index in length - 1 downTo 0) if (this[index] == '\uFFFC') replace(index, index + 1, "")
                 }.takeIf { it.isNotBlank() } ?: "空白笔记"
             } else preview(note).ifBlank { "点此添加分支" }
             holder.image.tag = note.id
             holder.image.setImageDrawable(null)
             holder.image.visibility = View.GONE
-            val imageId = if (note.kind == "richtext") {
+            val imageId = if (note.kind != "mindmap") {
                 val spans = JSONObject(note.body).optJSONArray("spans")
                 (0 until (spans?.length() ?: 0)).firstNotNullOfOrNull { index ->
                     spans!!.getJSONObject(index).takeIf { it.optString("type") == "image" }?.optString("attachmentId")
@@ -1821,7 +1892,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun pill(label: String, click: () -> Unit) = TextView(this).apply {
         text = label; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; setTextColor(ink); gravity = Gravity.CENTER
-        background = rounded(if (label.contains("灵感")) paper else if (dark) 0xff263f25.toInt() else 0xffe6f8df.toInt(), 28)
+        background = rounded(if (label.contains("灵感")) paper else greenSoft, 28)
         tapFeedback()
         setOnClickListener { click() }
     }

@@ -21,6 +21,7 @@ export interface NativeNote {
   groupId: string | null;
   private: boolean;
   updatedAt: number;
+  viewMode?: string;
 }
 
 export class NativeStore {
@@ -30,6 +31,7 @@ export class NativeStore {
   privateNotes: NativeNote[] = [];
   dark: boolean = false;
   listLayout: boolean = false;
+  accent: string = '#54D81B';
   private pending: Promise<void> = Promise.resolve();
 
   private constructor(security: DeviceSecurity) {
@@ -45,6 +47,7 @@ export class NativeStore {
       store.notes = data.notes;
       store.dark = data.dark ?? false;
       store.listLayout = data.listLayout ?? false;
+      store.accent = data.accent ?? '#54D81B';
     }
     return store;
   }
@@ -63,7 +66,7 @@ export class NativeStore {
   }
 
   saveNormal(): Promise<void> {
-    const value = JSON.stringify({ groups: this.groups, notes: this.notes, dark: this.dark, listLayout: this.listLayout });
+    const value = JSON.stringify({ groups: this.groups, notes: this.notes, dark: this.dark, listLayout: this.listLayout, accent: this.accent });
     this.pending = this.pending.then((): Promise<void> => this.security.setSecret('native-workspace-v1', value));
     return this.pending;
   }
@@ -89,6 +92,7 @@ interface WorkspaceData {
   notes: NativeNote[];
   dark?: boolean;
   listLayout?: boolean;
+  accent?: string;
 }
 
 export function newId(): string {
@@ -96,12 +100,12 @@ export function newId(): string {
 }
 
 export function newNote(kind: string, groupId: string | null, privacy: boolean): NativeNote {
-  const title = kind === 'mindmap' ? '未命名的灵感笔记' : '未命名笔记';
+  const title = kind === 'mindmap' ? '未命名的灵感笔记' : kind === 'todo' ? '待办清单' : '未命名笔记';
   const root: MindBranch = { id: newId(), text: title, children: [] };
   return {
     id: newId(), title: title,
     body: kind === 'mindmap' ? JSON.stringify({ type: 'mindmap', root: root })
-      : JSON.stringify({ version: 1, text: '', spans: [] }),
+      : JSON.stringify({ version: 1, text: kind === 'todo' ? '☐ ' : '', spans: [] }),
     kind: kind, groupId: groupId, private: privacy, updatedAt: Date.now()
   };
 }

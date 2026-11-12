@@ -7,6 +7,7 @@ import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.TextPaint
 import android.text.style.AlignmentSpan
+import android.text.style.CharacterStyle
 import android.text.style.BulletSpan
 import android.text.style.BackgroundColorSpan
 import android.text.style.ImageSpan
@@ -23,6 +24,22 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 object RichTextCodec {
+    private class CompletedTaskSpan(private val color: Int) : CharacterStyle() {
+        override fun updateDrawState(paint: TextPaint) {
+            paint.color = color
+            paint.isStrikeThruText = true
+        }
+    }
+
+    fun styleTasks(text: Spannable, dark: Boolean) {
+        text.getSpans(0, text.length, CompletedTaskSpan::class.java).forEach(text::removeSpan)
+        Regex("(?m)^☑ [^\\n]*").findAll(text.toString()).forEach { match ->
+            if (match.value.length > 2) text.setSpan(
+                CompletedTaskSpan(if (dark) 0xffa4afa1.toInt() else 0xff777e77.toInt()),
+                match.range.first + 2, match.range.last + 1, Spannable.SPAN_EXCLUSIVE_INCLUSIVE,
+            )
+        }
+    }
     private class CommentTextSpan(private val color: Int) : MetricAffectingSpan() {
         override fun updateDrawState(paint: TextPaint) {
             paint.color = color
@@ -87,7 +104,7 @@ object RichTextCodec {
         return JSONObject().put("version", 1).put("text", text.toString()).put("spans", spans).toString()
     }
 
-    fun decode(body: String, dark: Boolean = false, image: (String) -> Drawable? = { null }): SpannableStringBuilder {
+    fun decode(body: String, dark: Boolean = false, accent: Int = 0xff54d81b.toInt(), image: (String) -> Drawable? = { null }): SpannableStringBuilder {
         val source = JSONObject(body)
         val result = SpannableStringBuilder(source.optString("text"))
         val spans = source.optJSONArray("spans") ?: JSONArray()
@@ -101,8 +118,8 @@ object RichTextCodec {
                 "italic" -> StyleSpan(Typeface.ITALIC)
                 "underline" -> UnderlineSpan()
                 "strike" -> StrikethroughSpan()
-                "quote" -> QuoteSpan(0xff54d81b.toInt())
-                "bullet" -> BulletSpan(18, 0xff54d81b.toInt())
+                "quote" -> QuoteSpan(if (dark) 0xffa4afa1.toInt() else 0xff777e77.toInt(), 0, 0)
+                "bullet" -> BulletSpan(18, accent)
                 "center" -> AlignmentSpan.Standard(Layout.Alignment.ALIGN_CENTER)
                 "right" -> AlignmentSpan.Standard(Layout.Alignment.ALIGN_OPPOSITE)
                 "left" -> AlignmentSpan.Standard(Layout.Alignment.ALIGN_NORMAL)
@@ -117,6 +134,7 @@ object RichTextCodec {
                 if (entry.getString("type") == "quote") Spannable.SPAN_EXCLUSIVE_INCLUSIVE else Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             if (entry.getString("type") == "quote") styleComment(result, start, end, dark)
         }
+        styleTasks(result, dark)
         return result
     }
 }

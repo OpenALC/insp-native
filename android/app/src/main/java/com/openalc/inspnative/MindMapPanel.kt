@@ -54,14 +54,15 @@ class MindMapPanel(
     private val changed: () -> Unit,
     private val beginEditing: () -> Unit,
 ) : LinearLayout(context) {
+    private val accent = Accent.color(context)
     private val rootNode = MindNode.read(JSONObject(note.body).getJSONObject("root"))
     private val list = LinearLayout(context).apply { orientation = VERTICAL }
     private val nodeInputs = mutableMapOf<String, EditText>()
     private val nodeRows = mutableMapOf<String, LinearLayout>()
     private val scroll = ScrollView(context).apply { addView(list) }
     private val treeFrame = FrameLayout(context)
-    private val tree = MindTreeView(context, rootNode, { node -> startTreeEdit(node) }, { node -> addChild(node) },
-        { node -> selectedId = node.id; toolAction("sibling") }, { node -> node.collapsed = !node.collapsed; update() },
+    private val tree = MindTreeView(context, rootNode, { node -> startTreeEdit(node) },
+        { node -> node.collapsed = !node.collapsed; update() },
         { placeTreeEditor() })
     private val treeInput = EditText(context).apply {
         setSingleLine(false)
@@ -70,10 +71,20 @@ class MindMapPanel(
             android.content.res.Configuration.UI_MODE_NIGHT_YES) 0xffd4d4d4.toInt() else Color.BLACK)
         background = null
         setPadding(dp(12), dp(8), dp(12), dp(8))
+        imeOptions = EditorInfo.IME_ACTION_NEXT
+        setOnEditorActionListener { _, actionId, event ->
+            if (actionId == EditorInfo.IME_ACTION_NEXT || event?.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN) {
+                val node = treeEditingNode ?: return@setOnEditorActionListener false
+                finishTreeEdit()
+                selectedId = node.id
+                toolAction("sibling")
+                true
+            } else false
+        }
         visibility = GONE
     }
     private var treeEditingNode: MindNode? = null
-    private var treeMode = true
+    private var treeMode = context.getSharedPreferences("mind-view", Context.MODE_PRIVATE).getBoolean(note.id, false)
     private var selectedId = rootNode.id
     private var editing = false
     private var metaLabel: TextView? = null
@@ -88,7 +99,8 @@ class MindMapPanel(
         treeFrame.addView(tree, FrameLayout.LayoutParams(-1, -1))
         treeFrame.addView(treeInput, FrameLayout.LayoutParams(dp(180), dp(56)))
         addView(treeFrame, LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f))
-        scroll.visibility = GONE
+        scroll.visibility = if (treeMode) GONE else VISIBLE
+        treeFrame.visibility = if (treeMode) VISIBLE else GONE
         treeInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
@@ -97,7 +109,6 @@ class MindMapPanel(
             override fun afterTextChanged(s: Editable?) = Unit
         })
         for ((label, icon, action) in listOf(
-            Triple("子级", "plus", "child"), Triple("同级", "sibling", "sibling"),
             Triple("升级", "outdent", "outdent"), Triple("降级", "indent", "indent")
         )) {
             val cell = FrameLayout(context).apply {
@@ -106,7 +117,7 @@ class MindMapPanel(
                     setColor(if (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK ==
                         android.content.res.Configuration.UI_MODE_NIGHT_YES) 0xff303830.toInt() else Color.WHITE)
                 }
-                foreground = RippleDrawable(ColorStateList.valueOf(0x4454d81b), null,
+                foreground = RippleDrawable(ColorStateList.valueOf((accent and 0x00ffffff) or 0x44000000), null,
                     GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.WHITE) })
                 setOnClickListener { toolAction(action) }
                 contentDescription = label
@@ -123,7 +134,7 @@ class MindMapPanel(
 
     fun setEditing(value: Boolean) {
         editing = value
-        toolbar.visibility = if (value && !treeMode) VISIBLE else GONE
+        toolbar.visibility = if (value) VISIBLE else GONE
         nodeInputs.values.forEach { it.isFocusableInTouchMode = value; it.isCursorVisible = value }
         if (!value) {
             finishTreeEdit()
@@ -143,16 +154,19 @@ class MindMapPanel(
     fun toggleMode(): Boolean {
         finishTreeEdit()
         treeMode = !treeMode
+        context.getSharedPreferences("mind-view", Context.MODE_PRIVATE).edit().putBoolean(note.id, treeMode).apply()
         val outgoing = if (treeMode) scroll else treeFrame
         val incoming = if (treeMode) treeFrame else scroll
         outgoing.visibility = GONE
         incoming.alpha = 0f
         incoming.visibility = VISIBLE
         incoming.animate().alpha(1f).setDuration(200).start()
-        toolbar.visibility = if (editing && !treeMode) VISIBLE else GONE
+        toolbar.visibility = if (editing) VISIBLE else GONE
         tree.relayout()
         return treeMode
     }
+
+    fun isTreeMode(): Boolean = treeMode
 
     private fun save() {
         if (note.title != rootNode.text) {
@@ -189,33 +203,6 @@ class MindMapPanel(
             orientation = VERTICAL
             setPadding(dp(24), dp(18), dp(24), dp(24))
         }
-        val title = EditText(context).apply {
-            setSingleLine(true)
-            textSize = 28f
-            typeface = Typeface.DEFAULT_BOLD
-            background = null
-            setTextColor(if (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK ==
-                android.content.res.Configuration.UI_MODE_NIGHT_YES) 0xffd4d4d4.toInt() else Color.BLACK)
-            hint = "请输入中心主题"
-            setText(rootNode.text)
-            isFocusableInTouchMode = editing
-            isCursorVisible = editing
-            setOnTouchListener { _, event ->
-                if (!editing && event.actionMasked == MotionEvent.ACTION_UP) {
-                    beginEditing(); inputFocus(rootNode.id); true
-                } else false
-            }
-            setOnFocusChangeListener { _, focused -> if (focused) selectNode(rootNode.id) }
-            addTextChangedListener(object : TextWatcher {
-                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                    rootNode.text = s.toString(); save()
-                }
-                override fun afterTextChanged(s: Editable?) = Unit
-            })
-        }
-        nodeInputs[rootNode.id] = title
-        header.addView(title, LayoutParams(-1, dp(54)))
         metaLabel = TextView(context).apply {
             text = metadata(); textSize = 13f
             setTextColor(if (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK ==
@@ -226,7 +213,7 @@ class MindMapPanel(
         if (rootNode.children.isEmpty()) list.addView(TextView(context).apply {
             text = "＋  添加第一个分支"
             textSize = 16f
-            setTextColor(0xff40882c.toInt())
+            setTextColor(Accent.mix(accent, Color.BLACK, .62f))
             setPadding(dp(38), dp(26), dp(22), dp(26))
             setOnClickListener { addChild(rootNode) }
         })
@@ -318,7 +305,7 @@ class MindMapPanel(
         selectedId = id
         tree.select(id)
         nodeRows.forEach { (key, row) ->
-            row.setBackgroundColor(if (key == id && editing) 0x1054d81b else Color.TRANSPARENT)
+            row.setBackgroundColor(if (key == id && editing) (accent and 0x00ffffff) or 0x10000000 else Color.TRANSPARENT)
         }
     }
 
@@ -436,11 +423,10 @@ private class MindTreeView(
     context: Context,
     private val root: MindNode,
     private val edit: (MindNode) -> Unit,
-    private val add: (MindNode) -> Unit,
-    private val addSibling: (MindNode) -> Unit,
     private val toggleCollapse: (MindNode) -> Unit,
     private val viewportChanged: () -> Unit,
 ) : View(context) {
+    private val accent = Accent.color(context)
     private data class Box(val node: MindNode, val x: Float, var y: Float, val width: Float, val height: Float,
                            val text: StaticLayout, val ink: TextPaint)
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -558,7 +544,7 @@ private class MindTreeView(
         canvas.translate(offsetX, offsetY)
         canvas.scale(scale * density, scale * density)
         val byId = boxes.associateBy { it.node.id }
-        paint.color = if (dark) 0xff6d9f62.toInt() else 0xff8db783.toInt()
+        paint.color = Accent.mix(accent, if (dark) Color.BLACK else Color.WHITE, if (dark) .65f else .40f)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 1.7f
         for (parent in boxes) if (!parent.node.collapsed) for (child in parent.node.children) {
@@ -574,12 +560,12 @@ private class MindTreeView(
         }
         paint.style = Paint.Style.FILL
         for (box in boxes) {
-            paint.color = if (box.node === root) 0xff54d81b.toInt() else
-                if (dark) 0xff303830.toInt() else 0xffeef8e9.toInt()
+            paint.color = if (box.node === root) accent else
+                if (dark) 0xff303830.toInt() else Accent.mix(accent, Color.WHITE, .10f)
             val bounds = RectF(box.x, box.y, box.x + box.width, box.y + box.height)
             canvas.drawRoundRect(bounds, 15f, 15f, paint)
             if (box.node.id == selectedId) {
-                paint.color = 0xff45ba16.toInt()
+                paint.color = Accent.mix(accent, Color.BLACK, .88f)
                 paint.style = Paint.Style.STROKE
                 paint.strokeWidth = 1.5f
                 canvas.drawRoundRect(bounds, 15f, 15f, paint)
@@ -596,30 +582,11 @@ private class MindTreeView(
                 val count = countHidden(box.node)
                 paint.color = if (dark) 0xff3e5b39.toInt() else Color.WHITE
                 canvas.drawCircle(box.x + box.width + 15f, box.y + box.height / 2f, 14f, paint)
-                paint.color = 0xff54a925.toInt()
+                paint.color = Accent.mix(accent, Color.BLACK, .72f)
                 paint.textSize = 13f
                 paint.textAlign = Paint.Align.CENTER
                 canvas.drawText(count.toString(), box.x + box.width + 15f, box.y + box.height / 2f + 5f, paint)
                 paint.textAlign = Paint.Align.LEFT
-            }
-            if (box.node.id == selectedId) {
-                val plusX = box.x + box.width + if (box.node.collapsed && box.node.children.isNotEmpty()) 47f else 25f
-                paint.color = 0xff54d81b.toInt()
-                canvas.drawCircle(plusX, box.y + box.height / 2f, 17f, paint)
-                paint.color = Color.BLACK
-                paint.textSize = 26f
-                paint.textAlign = Paint.Align.CENTER
-                canvas.drawText("+", plusX, box.y + box.height / 2f + 9f, paint)
-                paint.textAlign = Paint.Align.LEFT
-                if (box.node !== root) {
-                    paint.color = if (dark) 0xff303830.toInt() else Color.WHITE
-                    canvas.drawCircle(plusX, box.y + box.height / 2f + 43f, 17f, paint)
-                    paint.color = if (dark) 0xffd4d4d4.toInt() else Color.BLACK
-                    paint.textSize = 22f
-                    paint.textAlign = Paint.Align.CENTER
-                    canvas.drawText("↳", plusX, box.y + box.height / 2f + 51f, paint)
-                    paint.textAlign = Paint.Align.LEFT
-                }
             }
         }
         canvas.restore()
@@ -643,32 +610,16 @@ private class MindTreeView(
             MotionEvent.ACTION_UP -> if (!moved && !detector.isInProgress) {
                 val x = (event.x - offsetX) / (scale * density)
                 val y = (event.y - offsetY) / (scale * density)
-                val selected = boxes.firstOrNull { box ->
-                    if (box.node.id != selectedId) false else {
-                        val plusX = box.x + box.width + if (box.node.collapsed && box.node.children.isNotEmpty()) 47f else 25f
-                        x in (plusX - 20f)..(plusX + 20f) && y in (box.y + box.height / 2f - 20f)..(box.y + box.height / 2f + 20f)
-                    }
+                val collapsed = boxes.firstOrNull { box ->
+                    box.node.collapsed && box.node.children.isNotEmpty() &&
+                        x in (box.x + box.width + 1f)..(box.x + box.width + 29f) &&
+                        y in (box.y + box.height / 2f - 15f)..(box.y + box.height / 2f + 15f)
                 }
-                if (selected != null) add(selected.node)
-                else {
-                    val sibling = boxes.firstOrNull { box ->
-                        if (box.node === root || box.node.id != selectedId) false else {
-                            val plusX = box.x + box.width + if (box.node.collapsed && box.node.children.isNotEmpty()) 47f else 25f
-                            x in (plusX - 20f)..(plusX + 20f) && y in (box.y + box.height / 2f + 23f)..(box.y + box.height / 2f + 63f)
-                        }
-                    }
-                    val collapsed = boxes.firstOrNull { box ->
-                        box.node.collapsed && box.node.children.isNotEmpty() &&
-                            x in (box.x + box.width + 1f)..(box.x + box.width + 29f) &&
-                            y in (box.y + box.height / 2f - 15f)..(box.y + box.height / 2f + 15f)
-                    }
-                    if (sibling != null) addSibling(sibling.node)
-                    else if (collapsed != null) toggleCollapse(collapsed.node)
-                    else boxes.firstOrNull { x in it.x..(it.x + it.width) && y in it.y..(it.y + it.height) }?.let {
+                if (collapsed != null) toggleCollapse(collapsed.node)
+                else boxes.firstOrNull { x in it.x..(it.x + it.width) && y in it.y..(it.y + it.height) }?.let {
                     selectedId = it.node.id
                     invalidate()
                     edit(it.node)
-                    }
                 }
             }
         }

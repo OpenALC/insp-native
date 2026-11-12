@@ -153,11 +153,12 @@ class NativeStore(context: Context) : SQLiteOpenHelper(context, "insp-native.db"
     }
 
     fun create(kind: String, groupId: String?, private: Boolean): NativeNote {
-        val title = if (kind == "mindmap") "未命名的灵感笔记" else "未命名笔记"
+        val title = when (kind) { "mindmap" -> "未命名的灵感笔记"; "todo" -> "待办清单"; else -> "未命名笔记" }
         val body = if (kind == "mindmap") {
             JSONObject().put("type", "mindmap").put("root", JSONObject()
                 .put("id", UUID.randomUUID().toString()).put("text", title).put("children", org.json.JSONArray())).toString()
-        } else RichTextCodec.empty()
+        } else if (kind == "todo") JSONObject().put("version", 1).put("text", "☐ ").put("spans", org.json.JSONArray()).toString()
+        else RichTextCodec.empty()
         return NativeNote(UUID.randomUUID().toString(), title, body, kind, groupId, private, System.currentTimeMillis())
             .also(::save)
     }

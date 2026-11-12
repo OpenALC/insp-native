@@ -44,7 +44,7 @@ object TransferImport {
         }
         val notes = manifest.getJSONArray("notes").objects().map { source ->
             val kind = source.getString("kind")
-            require(kind == "richtext" || kind == "mindmap")
+            require(kind == "richtext" || kind == "mindmap" || kind == "todo")
             val privacy = source.getString("privacy")
             require(privacy == "normal" || privacy == "private")
             val images = mutableListOf<TransferImage>()

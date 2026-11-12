@@ -69,6 +69,7 @@ class NativeIcon(context: Context, private val name: String, color: Int) : View(
             "trash" -> { rect(6f, 7f, 18f, 21f); line(4f, 6f, 20f, 6f); line(9f, 3f, 15f, 3f); line(10f, 11f, 10f, 17f); line(14f, 11f, 14f, 17f) }
             "image" -> { rect(3f, 3f, 21f, 21f); circle(8f, 8f, 1.5f); line(5f, 18f, 10f, 13f, 13f, 16f, 16f, 12f, 20f, 17f) }
             "document" -> { line(5f, 2f, 15f, 2f, 20f, 7f, 20f, 22f, 5f, 22f, 5f, 2f); line(15f, 2f, 15f, 7f, 20f, 7f); line(8f, 12f, 17f, 12f); line(8f, 16f, 17f, 16f) }
+            "checklist" -> { rect(3f, 4f, 9f, 10f, 1f); rect(3f, 14f, 9f, 20f, 1f); line(12f, 7f, 21f, 7f); line(12f, 17f, 21f, 17f) }
         }
         canvas.restore()
     }
