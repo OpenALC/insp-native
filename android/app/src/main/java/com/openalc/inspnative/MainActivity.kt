@@ -457,7 +457,7 @@ class MainActivity : AppCompatActivity() {
     private fun create(kind: String) {
         io.execute {
             val note = store.create(kind, groupId?.takeIf { it.isNotEmpty() }, privateArea)
-            runOnUiThread { allNotes = listOf(note) + allNotes; searchInput.setText(""); renderCards(); cards.scrollToPosition(0); openNote(note, null, true) }
+            runOnUiThread { allNotes = listOf(note) + allNotes; searchInput.setText(""); renderCards(); cards.scrollToPosition(0); openNote(note, null, kind == "richtext") }
         }
     }
 
@@ -518,13 +518,18 @@ class MainActivity : AppCompatActivity() {
                 scheduleSave()
             })
         }
-        titleInput = title
-        top.addView(title, LinearLayout.LayoutParams(0, dp(50), 1f))
+        if (note.kind == "richtext") {
+            titleInput = title
+            top.addView(title, LinearLayout.LayoutParams(0, dp(50), 1f))
+        } else {
+            titleInput = null
+            top.addView(View(this), LinearLayout.LayoutParams(0, dp(50), 1f))
+        }
         doneButton = iconButton("check") { exitEditing() }.apply { visibility = View.GONE }
         top.addView(doneButton, LinearLayout.LayoutParams(dp(48), dp(48)))
         if (note.kind == "mindmap") {
             val toggle = ImageView(this).apply {
-                setImageResource(R.drawable.ic_mind_tree)
+                setImageResource(R.drawable.ic_mind_list)
                 setColorFilter(ink)
                 setPadding(dp(12), dp(12), dp(12), dp(12))
                 setOnClickListener {
@@ -1074,7 +1079,7 @@ class MainActivity : AppCompatActivity() {
             1 -> privacyOptions(note)
             2 -> shareOptions(note)
             3 -> showSheet("删除这篇笔记？", arrayOf("删除笔记")) {
-                io.execute { store.delete(note.id); runOnUiThread { closeEditor() } }
+                io.execute { store.delete(note.id); runOnUiThread { active = null; closeEditor() } }
             }
         } }
     }

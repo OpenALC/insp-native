@@ -15,6 +15,8 @@ interface BranchRow {
   id: string;
   text: string;
   depth: number;
+  hasChildren: boolean;
+  collapsed: boolean;
 }
 
 interface TreePoint {
@@ -24,6 +26,7 @@ interface TreePoint {
   depth: number;
   x: number;
   y: number;
+  hiddenCount: number;
 }
 
 @Entry
@@ -40,6 +43,7 @@ struct Index {
   @State private treeMode: boolean = false;
   @State private selectedBranchId: string = '';
   @State private rows: BranchRow[] = [];
+  @State private mindStructureRevision: number = 0;
   @State private treeNodes: TreePoint[] = [];
   @State private treeLines: string = '';
   @State private treeWidth: number = 220;
@@ -74,6 +78,8 @@ struct Index {
   private richReady: boolean = false;
   private richLoading: boolean = false;
   private listScroller: Scroller = new Scroller();
+  private mindTreeScroller: Scroller = new Scroller();
+  private mindInputControllers: Map<string, TextInputController> = new Map<string, TextInputController>();
   private sidebarWidth: number = 220;
   private suppressSelectionClick: string = '';
 
@@ -184,7 +190,7 @@ struct Index {
     this.search = '';
     this.listScroller.scrollEdge(Edge.Top);
     this.open(note);
-    this.editingMode = true;
+    this.editingMode = kind !== 'mindmap';
   }
 
   private clearSelection(): void {
@@ -227,7 +233,7 @@ struct Index {
     this.activeId = note.id;
     this.title = note.title;
     this.body = note.body;
-    this.treeMode = false;
+    this.treeMode = note.kind === 'mindmap';
     this.selectedBranchId = note.kind === 'mindmap' ? (JSON.parse(note.body) as MindDocument).root.id : '';
     this.noteOptions = false;
     this.movingGroup = false;
@@ -241,6 +247,7 @@ struct Index {
   }
 
   private leaveEditor(): void {
+    this.commitTreeEdit();
     this.saveNow();
     this.activeId = '';
     this.editingMode = false;
@@ -251,6 +258,7 @@ struct Index {
   }
 
   private finishEditing(): void {
+    this.commitTreeEdit();
     focusControl.requestFocus('editorDone');
     this.saveNow();
     this.editingMode = false;
@@ -593,6 +601,10 @@ struct Index {
     return (JSON.parse(this.body) as MindDocument).root;
   }
 
+  private mindCharCount(node: MindBranch): number {
+    return node.text.length + node.children.reduce((count: number, child: MindBranch): number => count + this.mindCharCount(child), 0);
+  }
+
   private refreshBranches(): void {
     const note = this.activeNote();
     if (note === null || note.kind !== 'mindmap') {
@@ -602,36 +614,57 @@ struct Index {
     }
     const rows: BranchRow[] = [];
     const visit = (node: MindBranch, depth: number): void => {
-      if (depth > 0) rows.push({ id: node.id, text: node.text, depth: depth });
-      node.children.forEach((child: MindBranch): void => visit(child, depth + 1));
+      if (depth > 0) rows.push({ id: node.id, text: node.text, depth: depth,
+        hasChildren: node.children.length > 0, collapsed: node.collapsed === true });
+      if (node.collapsed !== true) node.children.forEach((child: MindBranch): void => visit(child, depth + 1));
     };
     const root = this.mindRoot();
     visit(root, 0);
+    rows.forEach((row: BranchRow): void => {
+      if (!this.mindInputControllers.has(row.id)) this.mindInputControllers.set(row.id, new TextInputController());
+    });
     this.rows = rows;
     const points: TreePoint[] = [];
     let leaf = 0;
     let maxDepth = 0;
     const place = (node: MindBranch, depth: number, parentId: string): number => {
-      const childYs = node.children.map((child: MindBranch): number => place(child, depth + 1, node.id));
-      const y = childYs.length === 0 ? 24 + leaf++ * 82 : (childYs[0] + childYs[childYs.length - 1]) / 2;
+      const childYs = (node.collapsed === true ? [] : node.children).map((child: MindBranch): number => place(child, depth + 1, node.id));
+      const y = childYs.length === 0 ? 24 + leaf++ * 102 : (childYs[0] + childYs[childYs.length - 1]) / 2;
       maxDepth = Math.max(maxDepth, depth);
-      points.push({ id: node.id, text: node.text, parentId: parentId, depth: depth, x: 24 + depth * 260, y: y });
+      points.push({ id: node.id, text: node.text, parentId: parentId, depth: depth, x: 24 + depth * 260, y: y,
+        hiddenCount: node.collapsed === true ? this.countDescendants(node) : 0 });
       return y;
     };
-    place(root, 0, '');
+    const rootY = place(root, 0, '');
+    const viewportHeight = display.getDefaultDisplaySync().height / display.getDefaultDisplaySync().densityPixels;
+    const shiftY = Math.max(90, (viewportHeight - 620) / 2) - rootY;
+    points.forEach((point: TreePoint): void => { point.y += shiftY; });
     this.treeNodes = points;
     this.treeWidth = 24 + (maxDepth + 1) * 260;
-    this.treeHeight = Math.max(160, 82 * Math.max(leaf, 1) + 40);
+    this.treeHeight = Math.max(420, 102 * Math.max(leaf, 1) + Math.max(0, shiftY) + 80);
     const byId = new Map<string, TreePoint>();
     points.forEach((point: TreePoint): void => { byId.set(point.id, point); });
     this.treeLines = points.filter((point: TreePoint): boolean => point.parentId !== '').map((point: TreePoint): string => {
       const parent = byId.get(point.parentId) as TreePoint;
       const x1 = vp2px(parent.x + 210);
-      const y1 = vp2px(parent.y + 26);
+      const y1 = vp2px(parent.y + 36);
       const x2 = vp2px(point.x);
-      const y2 = vp2px(point.y + 26);
+      const y2 = vp2px(point.y + 36);
       return `M${x1} ${y1} C${x1 + vp2px(24)} ${y1} ${x2 - vp2px(24)} ${y2} ${x2} ${y2}`;
     }).join(' ');
+  }
+
+  private countDescendants(node: MindBranch): number {
+    return node.children.reduce((count: number, child: MindBranch): number => count + 1 + this.countDescendants(child), 0);
+  }
+
+  private toggleBranch(id: string): void {
+    const root = this.mindRoot();
+    const node = this.findBranch(root, id);
+    if (node === null || node.children.length === 0) return;
+    node.collapsed = node.collapsed !== true;
+    this.mindStructureRevision++;
+    this.updateMind(root);
   }
 
   private findBranch(root: MindBranch, id: string): MindBranch | null {
@@ -665,10 +698,15 @@ struct Index {
     if (parent === null) return;
     const id = newId();
     parent.children.push({ id: id, text: '新分支', children: [] });
+    this.mindStructureRevision++;
     this.selectedBranchId = id;
     this.editingMode = true;
     this.updateMind(root);
-    if (!this.treeMode) {
+    if (this.treeMode) {
+      this.editingTreeId = id;
+      this.editingTreeText = '';
+      setTimeout((): void => { this.revealTreeBranch(id); focusControl.requestFocus(`tree-${id}`); }, 0);
+    } else {
       setTimeout((): void => { focusControl.requestFocus(`mind-${id}`); }, 0);
     }
   }
@@ -680,8 +718,30 @@ struct Index {
     const index = parent.children.findIndex((node: MindBranch): boolean => node.id === this.selectedBranchId);
     const id = newId();
     parent.children.splice(index + 1, 0, { id: id, text: '新分支', children: [] });
+    this.mindStructureRevision++;
     this.selectedBranchId = id;
     this.updateMind(root);
+    if (this.treeMode) {
+      this.editingTreeId = id;
+      this.editingTreeText = '';
+      setTimeout((): void => { this.revealTreeBranch(id); focusControl.requestFocus(`tree-${id}`); }, 0);
+    } else setTimeout((): void => { focusControl.requestFocus(`mind-${id}`); }, 0);
+  }
+
+  private splitBranch(id: string): void {
+    const root = this.mindRoot();
+    const branch = this.findBranch(root, id);
+    const parent = this.findParent(root, id);
+    if (branch === null || parent === null) return;
+    const caret = this.mindInputControllers.get(id)?.getCaretOffset().index ?? branch.text.length;
+    const nextId = newId();
+    const next: MindBranch = { id: nextId, text: branch.text.slice(caret), children: [] };
+    branch.text = branch.text.slice(0, caret);
+    parent.children.splice(parent.children.findIndex((child: MindBranch): boolean => child.id === id) + 1, 0, next);
+    this.mindStructureRevision++;
+    this.selectedBranchId = nextId;
+    this.updateMind(root);
+    setTimeout((): void => { focusControl.requestFocus(`mind-${nextId}`); }, 0);
   }
 
   private editBranch(id: string, text: string): void {
@@ -689,17 +749,26 @@ struct Index {
     const branch = this.findBranch(root, id);
     if (branch === null) return;
     branch.text = text;
+    if (id === root.id) this.title = text;
     const row = this.rows.find((item: BranchRow): boolean => item.id === id);
     if (row !== undefined) row.text = text;
     this.updateMind(root, false);
   }
 
+  private revealTreeBranch(id: string): void {
+    const point = this.treeNodes.find((item: TreePoint): boolean => item.id === id);
+    if (point === undefined) return;
+    const viewportWidth = display.getDefaultDisplaySync().width / display.getDefaultDisplaySync().densityPixels;
+    this.mindTreeScroller.scrollTo({ xOffset: Math.max(0, point.x + 210 - viewportWidth * .8), yOffset: 0 });
+  }
+
   private commitTreeEdit(): void {
     if (this.editingTreeId === '') return;
     const id = this.editingTreeId;
-    const text = this.editingTreeText.trim() || '新分支';
+    const text = this.editingTreeText.trim() || (id === this.mindRoot().id ? '未命名的灵感笔记' : '新分支');
     this.editingTreeId = '';
     this.editBranch(id, text);
+    this.mindStructureRevision++;
     this.refreshBranches();
   }
 
@@ -719,6 +788,7 @@ struct Index {
       const parentIndex = grand.children.findIndex((node: MindBranch): boolean => node.id === parent.id);
       grand.children.splice(parentIndex + 1, 0, branch);
     }
+    this.mindStructureRevision++;
     this.updateMind(root);
   }
 
@@ -727,6 +797,7 @@ struct Index {
     const parent = this.findParent(root, id);
     if (parent === null) return;
     parent.children = parent.children.filter((node: MindBranch): boolean => node.id !== id);
+    this.mindStructureRevision++;
     this.selectedBranchId = parent.id;
     this.updateMind(root);
   }
@@ -740,6 +811,7 @@ struct Index {
     if (target < 0 || target >= parent.children.length) return;
     const branch = parent.children.splice(index, 1)[0];
     parent.children.splice(target, 0, branch);
+    this.mindStructureRevision++;
     this.updateMind(root);
   }
 
@@ -1041,8 +1113,8 @@ struct Index {
         .padding({ left: 18, right: 18, top: 14, bottom: 14 })
       Divider().color(this.dark ? '#394537' : '#E1E8DE')
         .width(this.wideTablet ? 760 : '94%').alignSelf(ItemAlign.Center)
-      Column({ space: 12 }) {
-        Text(`${new Date(this.activeNote()?.updatedAt || Date.now()).toLocaleTimeString()}  |  ${this.activeNote()?.kind === 'mindmap' ? this.rows.length : readRich(this.body).text.length} 字`)
+      if (this.activeNote()?.kind !== 'mindmap' || !this.treeMode) Column({ space: 12 }) {
+        Text(`${new Date(this.activeNote()?.updatedAt || Date.now()).toLocaleTimeString()}  |  ${this.activeNote()?.kind === 'mindmap' ? this.mindCharCount(this.mindRoot()) : readRich(this.body).text.length} 字`)
           .fontSize(13).fontColor(this.dark ? '#A4AFA1' : '#677166').width('100%')
         if (this.editingMode) {
           TextInput({ text: this.title, placeholder: '笔记名称' }).id('editorTitle')
@@ -1063,33 +1135,58 @@ struct Index {
         }
       }.width(this.wideTablet ? 760 : '100%').alignSelf(ItemAlign.Center)
         .padding({ left: 24, right: 24, top: 20, bottom: 18 })
-      Divider().color(this.dark ? '#394537' : '#E1E8DE')
-        .width(this.wideTablet ? 760 : '94%').alignSelf(ItemAlign.Center)
+      if (this.activeNote()?.kind !== 'mindmap' || !this.treeMode) {
+        Divider().color(this.dark ? '#394537' : '#E1E8DE')
+          .width(this.wideTablet ? 760 : '94%').alignSelf(ItemAlign.Center)
+      }
       if (this.activeNote()?.kind === 'mindmap') {
         if (this.treeMode) {
-          Scroll() {
+          Scroll(this.mindTreeScroller) {
             Stack({ alignContent: Alignment.TopStart }) {
               Path({ width: this.treeWidth, height: this.treeHeight, commands: this.treeLines })
                 .fill('#00000000').stroke(this.dark ? '#718E69' : '#9FC796').strokeWidth(2)
               ForEach(this.treeNodes, (node: TreePoint) => {
                 if (this.editingTreeId === node.id) {
-                  TextInput({ text: this.editingTreeText }).fontSize(16).width(210).height(52)
+                  TextInput({ text: this.editingTreeText, placeholder: node.depth === 0 ? '请输入中心主题' : '输入分支' })
+                    .id(`tree-${node.id}`).fontSize(node.depth === 0 ? 18 : 16).width(210).height(72)
+                    .fontColor(node.depth === 0 ? '#141914' : (this.dark ? '#D8DED4' : '#141914'))
+                    .backgroundColor(node.depth === 0 ? '#54D81B' : (this.dark ? '#303830' : '#EEF8E9'))
+                    .borderRadius(16)
                     .position({ x: node.x, y: node.y })
+                    .onAppear((): void => { setTimeout((): void => { focusControl.requestFocus(`tree-${node.id}`); }, 80); })
                     .onChange((value: string): void => { this.editingTreeText = value; })
                     .onSubmit((): void => this.commitTreeEdit())
                     .onBlur((): void => this.commitTreeEdit())
                 } else {
                   Text(node.text).fontSize(node.depth === 0 ? 18 : 16).fontWeight(node.depth === 0 ? FontWeight.Bold : FontWeight.Normal)
-                    .fontColor(this.dark ? '#D8DED4' : '#141914').maxLines(2)
-                    .textOverflow({ overflow: TextOverflow.Ellipsis }).width(210).height(52).padding({ left: 10, right: 32 })
-                    .backgroundColor(node.depth === 0 ? (this.dark ? '#34562C' : '#E6F8DF') : (this.dark ? '#252B24' : '#FFFFFF'))
+                    .fontColor(node.depth === 0 ? '#141914' : (this.dark ? '#D8DED4' : '#141914')).maxLines(3)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis }).width(210).height(72).padding({ left: 12, right: 20 })
+                    .backgroundColor(node.depth === 0 ? '#54D81B' : (this.dark ? '#303830' : '#EEF8E9'))
                     .borderRadius(16).position({ x: node.x, y: node.y })
                     .onClick((): void => {
                       this.selectedBranchId = node.id;
-                      if (node.depth === 0) return;
-                      if (!this.editingMode) { this.editingMode = true; return; }
+                      this.editingMode = true;
                       this.editingTreeId = node.id; this.editingTreeText = node.text;
+                      setTimeout((): void => { focusControl.requestFocus(`tree-${node.id}`); }, 0);
                     })
+                }
+                if (node.hiddenCount > 0) {
+                  Button(`${node.hiddenCount}`).type(ButtonType.Circle).width(30).height(30).fontSize(13)
+                    .fontColor('#45A926').backgroundColor(this.dark ? '#303830' : '#FFFFFF')
+                    .position({ x: node.x + 192, y: node.y - 8 })
+                    .onClick((): void => this.toggleBranch(node.id))
+                }
+                if (this.selectedBranchId === node.id) {
+                  Button('+').type(ButtonType.Circle).width(38).height(38).fontSize(25)
+                    .fontColor('#141914').backgroundColor('#54D81B')
+                    .position({ x: node.x + 216, y: node.y + 18 })
+                    .onClick((): void => { this.commitTreeEdit(); this.addBranch(node.id); })
+                  if (node.depth > 0) {
+                    Button('↳').type(ButtonType.Circle).width(34).height(34).fontSize(20)
+                      .fontColor(this.dark ? '#D8DED4' : '#141914').backgroundColor(this.dark ? '#303830' : '#FFFFFF')
+                      .position({ x: node.x + 218, y: node.y + 60 })
+                      .onClick((): void => { this.commitTreeEdit(); this.selectedBranchId = node.id; this.addSibling(); })
+                  }
                 }
               }, (node: TreePoint): string => node.id)
             }.width(this.treeWidth).height(this.treeHeight)
@@ -1112,13 +1209,17 @@ struct Index {
                   .alignItems(HorizontalAlign.Center)
               }
               ForEach(this.rows, (row: BranchRow) => {
-              Row({ space: 12 }) {
-                Column().width(7).height(7).borderRadius(4).backgroundColor('#54D81B')
+              Row({ space: 10 }) {
+                if (row.depth > 1) Text('│').fontSize(20).fontColor(this.dark ? '#50614D' : '#D5DED2')
+                Text(row.hasChildren ? (row.collapsed ? '▸' : '▾') : '•').fontSize(row.hasChildren ? 22 : 18)
+                  .fontColor(this.dark ? '#A4AFA1' : '#8D9D8A').width(24)
+                  .onClick((): void => { if (row.hasChildren) this.toggleBranch(row.id); })
                 if (this.editingMode) {
-                  TextInput({ text: row.text }).id(`mind-${row.id}`).fontSize(17).fontColor(this.dark ? '#D8DED4' : '#141914').width(0).layoutWeight(1)
+                  TextInput({ text: row.text, controller: this.mindInputControllers.get(row.id) }).id(`mind-${row.id}`).fontSize(17).fontColor(this.dark ? '#D8DED4' : '#141914').width(0).layoutWeight(1)
                     .backgroundColor('#00000000')
                     .onFocus((): void => { this.selectedBranchId = row.id; })
                     .onChange((value: string): void => this.editBranch(row.id, value))
+                    .enterKeyType(EnterKeyType.Next).onSubmit((): void => this.splitBranch(row.id))
                 } else {
                   Text(row.text).fontSize(17).fontColor(this.dark ? '#D8DED4' : '#141914')
                     .width(0).layoutWeight(1).onClick((): void => {
@@ -1127,22 +1228,20 @@ struct Index {
                     })
                 }
               }.width('100%').height(54).padding({ left: 18 + (row.depth - 1) * 24, right: 12 })
-                .backgroundColor(this.selectedBranchId === row.id ? (this.dark ? '#34562C' : '#EDF8E8') : (this.dark ? '#252B24' : '#F7F9F5'))
-                .borderRadius(15)
-              }, (row: BranchRow): string => row.id)
+                .backgroundColor(this.selectedBranchId === row.id && this.editingMode ? (this.dark ? '#263526' : '#F4F9F1') : '#00000000')
+              }, (row: BranchRow): string => `${row.id}-${this.mindStructureRevision}`)
             }.width(this.wideTablet ? 760 : '100%').constraintSize({ minHeight: '100%' }).padding(24)
               .alignSelf(ItemAlign.Center)
               .justifyContent(FlexAlign.Start).alignItems(HorizontalAlign.Start)
           }.layoutWeight(1)
         }
-        if (this.editingMode) {
+        if (this.editingMode && !this.treeMode) {
           Row() {
+            this.mindTool('子级', '+', 'child')
+            this.mindTool('同级', '↳', 'sibling')
             this.mindTool('升级', '↖', 'shallower')
             this.mindTool('降级', '↘', 'deeper')
-            this.mindTool('子主题', '+', 'child')
-            this.mindTool('同级', '↳', 'sibling')
-            this.mindTool('更多', '···', 'more')
-          }.width(this.tablet ? 520 : '94%').height(64)
+          }.width(this.tablet ? 340 : '88%').height(64)
             .padding({ left: 8, right: 8, top: 5, bottom: 5 })
             .backgroundColor(this.dark ? '#303830' : '#EFF4EB')
             .borderRadius(22).alignSelf(ItemAlign.Center).margin({ bottom: 14 })

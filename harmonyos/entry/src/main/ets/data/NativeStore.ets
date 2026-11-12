@@ -10,6 +10,7 @@ export interface MindBranch {
   id: string;
   text: string;
   children: MindBranch[];
+  collapsed?: boolean;
 }
 
 export interface NativeNote {
