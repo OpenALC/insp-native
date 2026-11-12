@@ -266,7 +266,7 @@ class TodoPage(
         displayedValues = Array(max - min + 1) { "${min + it}$unit" }
         setTextColor(ink)
         setTextSize(dp(18).toFloat())
-        setSelectionDividerHeight(dp(1))
+        setSelectionDividerHeight(0)
         descendantFocusability = NumberPicker.FOCUS_BLOCK_DESCENDANTS
     }
 
@@ -282,7 +282,12 @@ class TodoPage(
         panel.addView(text(title, 21f, ink, true), LayoutParams(-1, dp(48)))
         val row = LinearLayout(activity).apply { gravity = Gravity.CENTER }
         wheels.forEach { row.addView(it, LayoutParams(0, dp(214), 1f)) }
-        panel.addView(row)
+        val wheelArea = FrameLayout(activity)
+        wheelArea.addView(View(activity).apply {
+            background = shape(Accent.mix(accent, surface, .13f), 16)
+        }, FrameLayout.LayoutParams(-1, dp(50), Gravity.CENTER))
+        wheelArea.addView(row, FrameLayout.LayoutParams(-1, dp(214)))
+        panel.addView(wheelArea)
         val actions = LinearLayout(activity).apply { gravity = Gravity.CENTER_VERTICAL }
         actions.addView(text("取消", 16f, ink).apply {
             gravity = Gravity.CENTER; background = shape(pageColor, 24)
